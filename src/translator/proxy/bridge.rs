@@ -506,12 +506,14 @@ mod test {
     pub mod test_utils {
         use super::*;
 
+        #[allow(dead_code)]
         pub struct BridgeInterface {
-            pub tx_sv1_submit: Sender<DownstreamMessages>,
+            pub tx_sv1_submit: tokio::sync::broadcast::Sender<DownstreamMessages>,
             pub rx_sv2_submit_shares_ext:
                 tokio::sync::mpsc::Receiver<SubmitSharesExtended<'static>>,
-            pub tx_sv2_set_new_prev_hash: Sender<SetNewPrevHash<'static>>,
-            pub tx_sv2_new_ext_mining_job: Sender<NewExtendedMiningJob<'static>>,
+            pub tx_sv2_set_new_prev_hash: tokio::sync::broadcast::Sender<SetNewPrevHash<'static>>,
+            pub tx_sv2_new_ext_mining_job:
+                tokio::sync::broadcast::Sender<NewExtendedMiningJob<'static>>,
             pub rx_sv1_notify: broadcast::Receiver<server_to_client::Notify<'static>>,
         }
 
@@ -536,14 +538,17 @@ mod test {
             };
 
             let b = Bridge::new(
-                tx_sv1_submit.clone(),
                 tx_sv2_submit_shares_ext,
-                tx_sv2_set_new_prev_hash.clone(),
-                tx_sv2_new_ext_mining_job,
                 tx_sv1_notify,
+                //tx_sv1_submit.clone(),
                 extranonces,
                 Arc::new(Mutex::new(upstream_target)),
-                1,
+                //tx_sv2_set_new_prev_hash.clone(),
+                1, //tx_sv2_new_ext_mining_job,
+
+                   // extranonces,
+                   // Arc::new(Mutex::new(upstream_target)),
+                   // 1,
             );
             (b, interface)
         }

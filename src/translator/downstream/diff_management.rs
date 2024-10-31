@@ -449,10 +449,10 @@ mod test {
         let upstream_config = UpstreamDifficultyConfig {
             channel_diff_update_interval: 60,
             channel_nominal_hashrate: 0.0,
-            timestamp_of_last_update: 0,
-            should_aggregate: false,
+            // timestamp_of_last_update: 0,
+            // should_aggregate: false,
         };
-        let (tx_sv1_submit, _rx_sv1_submit) = unbounded();
+        let (tx_sv1_submit, _rx_sv1_submit) = tokio::sync::mpsc::channel(10);
         let (tx_outgoing, _rx_outgoing) = channel(10);
         let mut downstream = Downstream::new(
             1,

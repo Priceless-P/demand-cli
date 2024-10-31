@@ -207,3 +207,46 @@ pub fn get_mining_setup_connection_msg(work_selection: bool) -> SetupConnection<
         device_id,
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use codec_sv2::HandshakeRole;
+    use demand_sv2_connection::noise_connection_tokio::Connection;
+    use key_utils::Secp256k1PublicKey;
+    use noise_sv2::Initiator;
+    use std::net::ToSocketAddrs;
+    use tokio::net::TcpStream;
+
+    #[tokio::test]
+    async fn test_mining_setup_connection() {
+        let address = crate::POOL_ADDRESS
+            .to_socket_addrs()
+            .expect("Invalid pool address")
+            .next()
+            .expect("Invalid pool address");
+        let socket = loop {
+            match TcpStream::connect(address).await {
+                Ok(socket) => break socket,
+                Err(_e) => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+            }
+        };
+        let authority_public_key: Secp256k1PublicKey =
+            crate::AUTH_PUB_KEY.parse().expect("Invalid public key");
+        let initiator = Initiator::from_raw_k(authority_public_key.into_bytes())
+            .expect("Invalid authority key");
+        let (mut receiver, mut sender, _, _) =
+            Connection::new(socket, HandshakeRole::Initiator(initiator))
+                .await
+                .expect("Failed to create connection");
+        let setup_connection = get_mining_setup_connection_msg(true);
+        let connection = super::mining_setup_connection(
+            &mut receiver,
+            &mut sender,
+            setup_connection,
+            DEFAULT_TIMER,
+        );
+
+        assert!(connection.await.is_ok());
+    }
+}
