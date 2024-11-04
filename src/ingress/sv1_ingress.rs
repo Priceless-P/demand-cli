@@ -120,19 +120,55 @@ impl Downstream {
 mod test {
     use crate::ingress::sv1_ingress::Downstream;
     use futures::StreamExt;
-    use std::sync::Arc;
     use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncWriteExt;
-    use tokio::sync::Mutex;
     use tokio::{net::TcpStream, sync::mpsc};
     use tokio_util::codec::{Framed, LinesCodec};
 
-    #[tokio::test]
-    async fn test_sv1_ingress_relay() {
-        let (down_tx, down_rx) = mpsc::channel(10);
-        let (up_tx, mut up_rx) = mpsc::channel(10);
+    async fn setup_mock_server() -> (tokio::net::TcpListener, std::net::SocketAddr) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        (listener, address)
+    }
+
+    async fn setup_mock_client(address: std::net::SocketAddr) -> TcpStream {
+        let stream = TcpStream::connect(address).await.unwrap();
+        stream
+    }
+
+    async fn run_test(
+        mut mock_client: TcpStream,
+        mining_subscribe_message: String,
+        mut up_rx: mpsc::Receiver<String>,
+        up_tx: mpsc::Sender<String>,
+        down_tx: mpsc::Sender<String>,
+        response_message: String,
+        downstream_handle: tokio::task::JoinHandle<()>,
+    ) {
+        down_tx
+            .send(mining_subscribe_message.clone())
+            .await
+            .unwrap();
+
+        let received_message = up_rx.recv().await.unwrap();
+
+        assert_eq!(received_message.trim(), mining_subscribe_message.trim());
+
+        up_tx.send(response_message.clone()).await.unwrap();
+
+        let mut buf = vec![0; 1024];
+        let len = mock_client.read(&mut buf).await.unwrap();
+        let received_response = String::from_utf8_lossy(&buf[..len]);
+        assert_eq!(received_response.trim(), response_message.trim());
+
+        downstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_sv1_ingress_relay() {
+        let (down_tx, up_rx) = mpsc::channel(10);
+        let (up_tx, down_rx) = mpsc::channel(10);
+        let (listener, address) = setup_mock_server().await;
+        let down_tx_clone = down_tx.clone();
 
         let downstream_handle = tokio::spawn(async move {
             let (mock_server, _) = listener.accept().await.unwrap();
@@ -145,54 +181,27 @@ mod test {
             tokio::join!(
                 Downstream::receive_from_downstream_and_relay_up(
                     recv_from_downstream,
-                    down_tx.clone()
+                    down_tx_clone
                 ),
                 Downstream::receive_from_upstream_and_relay_down(send_to_downstream, down_rx)
             );
         });
 
-        // Connect mock client to downstream listener
-        let mock_client = Arc::new(Mutex::new(TcpStream::connect(address).await.unwrap()));
+        let mock_client = setup_mock_client(address).await;
         let mining_subscribe_message =
             "{\"id\": 1, \"method\": \"mining.subscribe\", \"params\": [\"cpuminer/2.5.1\"]}\n"
                 .to_string();
-        let mining_subscribe_message_up = mining_subscribe_message.clone();
-
-        // Send a message from downstream to upstream
-        let _client_send_task = {
-            let mock_client = Arc::clone(&mock_client);
-            tokio::spawn(async move {
-                let mut client = mock_client.lock().await;
-                client
-                    .write_all(mining_subscribe_message.as_bytes())
-                    .await
-                    .unwrap();
-            })
-        };
-
-        //Verify that the upstream received the expected message from downstream
-        let _up_rx_task = tokio::spawn(async move {
-            let received_message: String = up_rx.recv().await.unwrap();
-
-            assert_eq!(received_message, mining_subscribe_message_up.trim());
-        });
 
         let response_message = "{\"id\": 1, \"result\": true, \"error\": null}\n".to_string();
-
-        let _client_receive_task = {
-            let mock_client = Arc::clone(&mock_client);
-            tokio::spawn(async move {
-                // Upstream sends a message down
-                up_tx.send(response_message.clone()).await.unwrap();
-
-                let mut buf = vec![0; 1024];
-                let mut client = mock_client.lock().await;
-                let len = client.read(&mut buf).await.unwrap();
-                let received_response = String::from_utf8_lossy(&buf[..len]);
-                assert_eq!(received_response.trim(), response_message.trim());
-            })
-        };
-
-        downstream_handle.abort();
+        run_test(
+            mock_client,
+            mining_subscribe_message,
+            up_rx,
+            up_tx,
+            down_tx,
+            response_message,
+            downstream_handle,
+        )
+        .await;
     }
 }

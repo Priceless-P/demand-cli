@@ -88,28 +88,18 @@ pub fn relay_down(
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod test {
+    use super::{relay_down, relay_up};
     use crate::share_accounter::{
         parser::{PoolExtMessages, ShareAccountingMessages},
-        start, ShareOk,
+        ShareOk,
     };
     use binary_sv2::Sv2DataType;
     use binary_sv2::B032;
     use roles_logic_sv2::parsers::Mining;
+    use tokio::sync::mpsc;
 
-    #[tokio::test]
-    async fn test_share_accounter() {
-        let (tx_mining, rx_mining) = tokio::sync::mpsc::channel::<Mining<'static>>(10);
-        let (tx_pool, rx_pool) = tokio::sync::mpsc::channel::<PoolExtMessages<'static>>(10);
-
-        let tx_mining_clone = tx_mining.clone();
-        let tx_pool_clone = tx_pool.clone();
-
-        let abort_handle = tokio::spawn(async move {
-            start(rx_mining, tx_mining_clone, rx_pool, tx_pool_clone).await;
-        });
-
+    fn get_submit_share_extended() -> Mining<'static> {
         let submit_shares_extended = roles_logic_sv2::mining_sv2::SubmitSharesExtended {
             channel_id: 1,
             sequence_number: 42,
@@ -120,52 +110,81 @@ mod test {
             extranonce: B032::from_vec_([0u8; 32].to_vec()).unwrap(),
         };
 
-        let mining_msg = Mining::SubmitSharesExtended(submit_shares_extended);
-        tx_mining.send(mining_msg.clone()).await.unwrap();
+        Mining::SubmitSharesExtended(submit_shares_extended)
+    }
 
-        //Check if relay_up forwards it to up_sender as PoolExtMessages
-        //  let pool_msg = PoolExtMessages::Mining(mining_msg.clone());
-        // tx_pool.send(pool_msg).await.unwrap();
-        // if let Some(PoolExtMessages::Mining(Mining::SubmitSharesExtended(msg))) = rx_pool.recv().await {
-        //     assert_eq!(msg.job_id, mining_msg.job_id);
-        // } else {
-        //     panic!("Expected Mining message in PoolExtMessages channel");
-        // }
+    #[tokio::test]
+    async fn test_share_accounter_relay_up() {
+        let (sender, receiver) = mpsc::channel(10);
+        let (up_sender, mut up_receiver) = mpsc::channel(10);
 
-        // Check if relay_down forwards it to sender as Mining::SubmitSharesExtended
-        // if let Some(Mining::SubmitSharesExtended(received_msg)) = rx_mining.recv().await {
-        //     if let Mining::SubmitSharesExtended(expected_msg) = mining_msg {
-        //         assert_eq!(received_msg.channel_id, expected_msg.channel_id);
-        //         assert_eq!(received_msg.sequence_number, expected_msg.sequence_number);
-        //         assert_eq!(received_msg.job_id, expected_msg.job_id);
-        //         assert_eq!(received_msg.nonce, expected_msg.nonce);
-        //         assert_eq!(received_msg.ntime, expected_msg.ntime);
-        //         assert_eq!(received_msg.version, expected_msg.version);
-        //         assert_eq!(received_msg.extranonce, expected_msg.extranonce);
-        //     } else {
-        //         panic!("Expected Mining::SubmitSharesExtended Type");
-        //     }
-        // } else {
-        //     panic!("Expected Mining message");
-        // }
+        let relay_handle = relay_up(receiver, up_sender);
+        let submit_shares_msg = get_submit_share_extended();
 
-        let share = ShareOk {
-            ref_job_id: 1,
-            share_index: 2,
+        sender.send(submit_shares_msg.clone()).await.unwrap();
+
+        if let Some(PoolExtMessages::Mining(Mining::SubmitSharesExtended(received_msg))) =
+            up_receiver.recv().await
+        {
+            if let Mining::SubmitSharesExtended(expected_msg) = submit_shares_msg {
+                assert_eq!(received_msg.channel_id, expected_msg.channel_id);
+                assert_eq!(received_msg.sequence_number, expected_msg.sequence_number);
+                assert_eq!(received_msg.job_id, expected_msg.job_id);
+                assert_eq!(received_msg.nonce, expected_msg.nonce);
+                assert_eq!(received_msg.ntime, expected_msg.ntime);
+                assert_eq!(received_msg.version, expected_msg.version);
+                assert_eq!(received_msg.extranonce, expected_msg.extranonce);
+            } else {
+                panic!("Expected Mining::SubmitSharesExtended Type");
+            }
+        } else {
+            panic!("Expected Mining message");
+        }
+        drop(relay_handle);
+    }
+
+    #[tokio::test]
+    async fn test_share_accounter_relay_down() {
+        let (up_sender, up_receiver) = mpsc::channel(10);
+        let (sender, mut receiver) = mpsc::channel(10);
+
+        let relay_handle = relay_down(up_receiver, sender);
+        let submit_shares_msg = get_submit_share_extended();
+
+        up_sender
+            .send(PoolExtMessages::Mining(submit_shares_msg.clone()))
+            .await
+            .unwrap();
+        //tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let share = match submit_shares_msg {
+            Mining::SubmitSharesExtended(ref _msg) => ShareOk {
+                ref_job_id: 1,
+                //ShareOk expects ref_job_id to be u64 but SubmitSharesExtended job_id is u64
+                //ref_job_id: msg.job_id,
+                share_index: 2,
+            },
+            _ => panic!("Expected SubmitSharesExtended variant"),
         };
+
         // Send a ShareOk message
         let share_ok_msg = ShareAccountingMessages::ShareOk(share);
-        let pool_msg = PoolExtMessages::ShareAccountingMessages(share_ok_msg.clone());
-        tx_pool.send(pool_msg).await.unwrap();
+        up_sender
+            .send(PoolExtMessages::ShareAccountingMessages(
+                share_ok_msg.clone(),
+            ))
+            .await
+            .unwrap();
 
-        // Check if relay_down forwards ShareOk into Mining::SubmitSharesSuccess
-        // if let Some(Mining::SubmitSharesSuccess(success_msg)) = rx_mining.recv().await {
-        //     // Validate success_msg fields here
-        //     assert_eq!(success_msg.new_submits_accepted_count, 1);
-        // } else {
-        //     panic!("Expected SubmitSharesSuccess message");
-        // }
+        if let Some(Mining::SubmitSharesSuccess(success_msg)) = receiver.recv().await {
+            assert_eq!(success_msg.new_submits_accepted_count, 1);
+            assert_eq!(success_msg.new_shares_sum, 1);
+            assert_eq!(success_msg.channel_id, 1);
+            assert_eq!(success_msg.last_sequence_number, 42);
+        } else {
+            panic!("Expected SubmitSharesSuccess message");
+        }
 
-        abort_handle.abort();
+        drop(relay_handle);
     }
 }

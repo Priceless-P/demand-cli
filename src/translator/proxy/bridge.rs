@@ -496,9 +496,9 @@ pub struct OpenSv1Downstream {
 }
 
 #[cfg(test)]
+#[cfg(test)]
 mod test {
     use super::*;
-    use tokio::sync::broadcast::channel as bounded;
     use tokio::sync::mpsc::channel;
 
     use bitcoin::util::psbt::serialize::Serialize;
@@ -506,51 +506,21 @@ mod test {
     pub mod test_utils {
         use super::*;
 
-        #[allow(dead_code)]
-        pub struct BridgeInterface {
-            pub tx_sv1_submit: tokio::sync::broadcast::Sender<DownstreamMessages>,
-            pub rx_sv2_submit_shares_ext:
-                tokio::sync::mpsc::Receiver<SubmitSharesExtended<'static>>,
-            pub tx_sv2_set_new_prev_hash: tokio::sync::broadcast::Sender<SetNewPrevHash<'static>>,
-            pub tx_sv2_new_ext_mining_job:
-                tokio::sync::broadcast::Sender<NewExtendedMiningJob<'static>>,
-            pub rx_sv1_notify: broadcast::Receiver<server_to_client::Notify<'static>>,
-        }
-
-        pub fn create_bridge(
-            extranonces: ExtendedExtranonce,
-        ) -> (Arc<Mutex<Bridge>>, BridgeInterface) {
-            let (tx_sv1_submit, _) = bounded(1);
-            let (tx_sv2_submit_shares_ext, rx_sv2_submit_shares_ext) = channel(1);
-            let (tx_sv2_set_new_prev_hash, _) = bounded(1);
-            let (tx_sv2_new_ext_mining_job, _) = bounded(1);
-            let (tx_sv1_notify, rx_sv1_notify) = broadcast::channel(1);
+        pub fn create_bridge(extranonces: ExtendedExtranonce) -> Arc<Mutex<Bridge>> {
+            let (tx_sv2_submit_shares_ext, _rx_sv2_submit_shares_ext) = channel(1);
+            let (tx_sv1_notify, _rx_sv1_notify) = broadcast::channel(1);
             let upstream_target = vec![
                 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0, 0,
             ];
-            let interface = BridgeInterface {
-                tx_sv1_submit: tx_sv1_submit.clone(),
-                rx_sv2_submit_shares_ext,
-                tx_sv2_set_new_prev_hash: tx_sv2_set_new_prev_hash.clone(),
-                tx_sv2_new_ext_mining_job: tx_sv2_new_ext_mining_job.clone(),
-                rx_sv1_notify,
-            };
-
             let b = Bridge::new(
                 tx_sv2_submit_shares_ext,
                 tx_sv1_notify,
-                //tx_sv1_submit.clone(),
                 extranonces,
                 Arc::new(Mutex::new(upstream_target)),
-                //tx_sv2_set_new_prev_hash.clone(),
-                1, //tx_sv2_new_ext_mining_job,
-
-                   // extranonces,
-                   // Arc::new(Mutex::new(upstream_target)),
-                   // 1,
+                1,
             );
-            (b, interface)
+            b
         }
 
         pub fn create_sv1_submit(job_id: u32) -> Submit<'static> {
@@ -571,7 +541,7 @@ mod test {
         use bitcoin::{blockdata::witness::Witness, hashes::Hash};
 
         let extranonces = ExtendedExtranonce::new(0..6, 6..8, 8..16);
-        let (bridge, _) = test_utils::create_bridge(extranonces);
+        let bridge = test_utils::create_bridge(extranonces);
         bridge
             .safe_lock(|bridge| {
                 let channel_id = 1;
