@@ -651,3 +651,210 @@ pub fn proxy_extranonce1_len(
     // full_extranonce_len - pool_extranonce1_len - miner_extranonce2 = tproxy_extranonce1_len
     channel_extranonce2_size - downstream_extranonce2_len
 }
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use binary_sv2::Sv2DataType;
+
+    use super::Upstream;
+    use crate::translator::upstream::diff_management::UpstreamDifficultyConfig;
+    use bitcoin::{hashes::Hash, psbt::serialize::Serialize};
+    use roles_logic_sv2::{
+        mining_sv2::{NewExtendedMiningJob, SetNewPrevHash, SubmitSharesExtended},
+        parsers::Mining,
+        utils::Mutex,
+    };
+    use tokio::sync::mpsc;
+    use tracing::info;
+
+    fn get_submit_share_extended() -> SubmitSharesExtended<'static> {
+        let submit_shares_extended = roles_logic_sv2::mining_sv2::SubmitSharesExtended {
+            channel_id: 1,
+            sequence_number: 42,
+            job_id: 1,
+            nonce: 6789,
+            ntime: 1609459200,
+            version: 2,
+            extranonce: binary_sv2::B032::from_vec_([0u8; 32].to_vec()).unwrap(),
+        };
+        submit_shares_extended
+    }
+
+    fn get_new_prev_hash() -> Mining<'static> {
+        let new_prev_hash = SetNewPrevHash {
+            channel_id: 1,
+            job_id: 0,
+            prev_hash: [
+                3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3,
+            ]
+            .into(),
+            min_ntime: 989898,
+            nbits: 9,
+        };
+        Mining::SetNewPrevHash(new_prev_hash)
+    }
+
+    fn new_ext_mining_job() -> (Vec<u8>, Mining<'static>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        let out_id = bitcoin::hashes::sha256d::Hash::from_slice(&[
+            0_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ])
+        .unwrap();
+        let p_out = bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_hash(out_id),
+            vout: 0xffff_ffff,
+        };
+
+        let in_ = bitcoin::TxIn {
+            previous_output: p_out,
+            script_sig: vec![89_u8; 16].into(),
+            sequence: bitcoin::Sequence(0),
+            witness: bitcoin::Witness::from_vec(vec![]).into(),
+        };
+
+        let tx = bitcoin::Transaction {
+            version: 1,
+            lock_time: bitcoin::PackedLockTime(0),
+            input: vec![in_],
+            output: vec![],
+        };
+        let tx = tx.serialize();
+
+        let new_ext_mining_job = NewExtendedMiningJob {
+            channel_id: 1,
+            job_id: 0,
+            min_ntime: binary_sv2::Sv2Option::new(Some(now)),
+            version: 0b0000_0000_0000_0000,
+            version_rolling_allowed: false,
+            merkle_path: vec![].into(),
+            coinbase_tx_prefix: tx[0..42].to_vec().try_into().unwrap(),
+            coinbase_tx_suffix: tx[58..].to_vec().try_into().unwrap(),
+        };
+        (tx, Mining::NewExtendedMiningJob(new_ext_mining_job))
+    }
+
+    #[tokio::test]
+    async fn test_translator_upstream() {
+        let upstream_dif = UpstreamDifficultyConfig {
+            channel_diff_update_interval: 60,
+            channel_nominal_hashrate: 0.0,
+        };
+        let (tx_sv2_set_new_prev_hash, mut rx_sv2_set_new_prev_hash) = mpsc::channel(10);
+        let (tx_sv2_new_ext_mining_job, mut rx_sv2_new_ext_mining_job) = mpsc::channel(10);
+        let min_extranonce_size: u16 = 10;
+        let (tx_sv2_extranonce, mut rx_sv2_extranonce) = mpsc::channel(10);
+        let target = Arc::new(Mutex::new([255_u8; 32].to_vec()));
+        let difficulty_config = Arc::new(Mutex::new(upstream_dif));
+        let (sender, mut receiver) = mpsc::channel(10);
+        let (incoming_sender, incoming_receiver) = mpsc::channel(10);
+        let (tx_sv2_submit_shares_ext, rx_sv2_submit_shares_ext) = mpsc::channel(10);
+
+        // Initialize new Upstream instance
+        let self_ = Upstream::new(
+            tx_sv2_set_new_prev_hash,
+            tx_sv2_new_ext_mining_job,
+            min_extranonce_size,
+            tx_sv2_extranonce,
+            target,
+            difficulty_config,
+            sender,
+        )
+        .await
+        .unwrap();
+
+        // Start the upstream
+        let upstream_handler = Upstream::start(self_, incoming_receiver, rx_sv2_submit_shares_ext);
+
+        //Assert that that OpenExtendedMiningChannel message was received
+        if let Some(msg) = receiver.recv().await {
+            match msg {
+                Mining::OpenExtendedMiningChannel(channel) => {
+                    assert_eq!(channel.nominal_hash_rate, 0.0);
+                    assert_eq!(channel.min_extranonce_size, 10);
+                }
+                Mining::OpenExtendedMiningChannelSuccess(success) => {
+                    assert_ne!(success.extranonce_prefix.len(), 0);
+                }
+                e => {
+                    info!("Recieved msg: {:?}", e)
+                }
+            }
+        }
+
+        // incoming receiver is passed to Upstream::Start, which gets passed to Upstream::parse_message.
+        // Use incoming_sender to send messages to it
+        incoming_sender
+            .send(get_new_prev_hash())
+            .await
+            .expect("Error sending new prev hash");
+
+        // Upstream::parse_message receives new_prev_hash message (from incmoing_receiver) and sends response to rx_sv2_set_new_prev_hash
+        if let Some(new_prev_hash) = rx_sv2_set_new_prev_hash.recv().await {
+            assert_eq!(new_prev_hash.job_id, 0);
+            assert_eq!(new_prev_hash.nbits, 9);
+            assert_eq!(new_prev_hash.min_ntime, 989898);
+        }
+
+        // get new_mining_job
+        let (tx, new_mining_job) = new_ext_mining_job();
+
+        // Send mining job
+        incoming_sender
+            .send(new_mining_job)
+            .await
+            .expect("Error sending new_ext_mining_job");
+
+        // Upstream::parse_message receives new_ext_mining message (from incmoing_receiver) and sends response to rx_sv2_new_ext_mining_job
+        if let Some(new_job) = rx_sv2_new_ext_mining_job.recv().await {
+            assert_eq!(
+                new_job.coinbase_tx_prefix,
+                tx[0..42].to_vec().try_into().unwrap()
+            );
+            assert_ne!(
+                new_job.coinbase_tx_suffix,
+                tx[58..].to_vec().try_into().unwrap()
+            );
+            assert_eq!(new_job.version_rolling_allowed, false);
+        }
+
+        // if let Some(extened_extranounce) = rx_sv2_extranonce.recv().await {
+        //     assert_eq!(extened_extranounce.0.get_prefix_len(), tx[0..42].len());
+        //     assert_ne!(extened_extranounce.1, 1);
+        // }
+
+        // rx_sv2_submit_shares_ext is passed to Upstream::Start which gets passed to Upstream::handle_submit
+        // Use tx_sv2_submit_shares_ext to send message to it
+        tx_sv2_submit_shares_ext
+            .send(get_submit_share_extended())
+            .await
+            .expect("Error sending share");
+
+        // Upstream::handle_submit sends messages using the `sender` passed to Upstream::Start
+        // Receive it with thr corresponding `receiver` channel
+        if let Some(msg) = receiver.recv().await {
+            match msg {
+                Mining::SubmitSharesExtended(share) => {
+                    assert_eq!(share.channel_id, 1);
+                    assert_eq!(share.job_id, 1);
+                    assert_eq!(share.sequence_number, 42)
+                }
+                Mining::SubmitSharesSuccess(success) => {
+                    assert_eq!(success.new_submits_accepted_count, 1);
+                    assert_eq!(success.new_shares_sum, 1);
+                }
+                e => {
+                    info!("Recieved unexpected msg: {:?}", e)
+                }
+            }
+        }
+
+        tokio::try_join!(upstream_handler).expect("Error");
+    }
+}

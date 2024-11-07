@@ -108,7 +108,6 @@ mod test {
     use binary_sv2::B032;
     use roles_logic_sv2::parsers::Mining;
     use tokio::sync::mpsc;
-    use tracing::info;
 
     fn get_submit_share_extended() -> Mining<'static> {
         let submit_shares_extended = roles_logic_sv2::mining_sv2::SubmitSharesExtended {
@@ -126,9 +125,6 @@ mod test {
 
     #[tokio::test]
     async fn test_share_accounter() {
-        tracing_subscriber::fmt::init();
-
-        info!("Setting up channels...");
         let (send_to_share_accounter, mut from_pool_receiver) = mpsc::channel(10);
         let (_from_pool_sender, receive_from_pool) = mpsc::channel(10);
         let (send_to_pool, mut receive_from_share_accounter) = mpsc::channel(10);
@@ -203,6 +199,5 @@ mod test {
         }
 
         tokio::join!(start_handle);
-        info!("Test completed, start_handle dropped.");
     }
 }
