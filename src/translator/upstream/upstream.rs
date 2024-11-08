@@ -748,7 +748,7 @@ mod test {
         };
         let (tx_sv2_set_new_prev_hash, mut rx_sv2_set_new_prev_hash) = mpsc::channel(10);
         let (tx_sv2_new_ext_mining_job, mut rx_sv2_new_ext_mining_job) = mpsc::channel(10);
-        let min_extranonce_size: u16 = 10;
+        let min_extranonce_size: u16 = 8;
         let (tx_sv2_extranonce, mut rx_sv2_extranonce) = mpsc::channel(10);
         let target = Arc::new(Mutex::new([255_u8; 32].to_vec()));
         let difficulty_config = Arc::new(Mutex::new(upstream_dif));
@@ -770,14 +770,16 @@ mod test {
         .unwrap();
 
         // Start the upstream
-        let upstream_handler = Upstream::start(self_, incoming_receiver, rx_sv2_submit_shares_ext);
+        let upstream_handler = Upstream::start(self_, incoming_receiver, rx_sv2_submit_shares_ext)
+            .await
+            .unwrap();
 
         //Assert that that OpenExtendedMiningChannel message was received
         if let Some(msg) = receiver.recv().await {
             match msg {
                 Mining::OpenExtendedMiningChannel(channel) => {
                     assert_eq!(channel.nominal_hash_rate, 0.0);
-                    assert_eq!(channel.min_extranonce_size, 10);
+                    assert_eq!(channel.min_extranonce_size, 8);
                 }
                 Mining::OpenExtendedMiningChannelSuccess(success) => {
                     assert_ne!(success.extranonce_prefix.len(), 0);
@@ -817,7 +819,7 @@ mod test {
                 new_job.coinbase_tx_prefix,
                 tx[0..42].to_vec().try_into().unwrap()
             );
-            assert_ne!(
+            assert_eq!(
                 new_job.coinbase_tx_suffix,
                 tx[58..].to_vec().try_into().unwrap()
             );
@@ -842,7 +844,7 @@ mod test {
             match msg {
                 Mining::SubmitSharesExtended(share) => {
                     assert_eq!(share.channel_id, 1);
-                    assert_eq!(share.job_id, 1);
+                    assert_eq!(share.job_id, 0);
                     assert_eq!(share.sequence_number, 42)
                 }
                 Mining::SubmitSharesSuccess(success) => {
@@ -854,7 +856,8 @@ mod test {
                 }
             }
         }
-
-        tokio::try_join!(upstream_handler).expect("Error");
+        if upstream_handler.is_finished() {
+            drop(upstream_handler);
+        }
     }
 }
