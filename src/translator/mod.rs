@@ -159,3 +159,83 @@ pub async fn start(
 
     Ok(abortable)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use tracing::info;
+
+    #[tokio::test]
+    async fn test_translator() {
+        tracing_subscriber::fmt::init();
+
+        // create downstream and pool connection
+        let (downstreams_tx, downstreams_rx) = mpsc::channel(10);
+        let (pool_tx, mut pool_rx) = mpsc::channel::<(
+            TSender<Mining<'static>>,
+            TReceiver<Mining<'static>>,
+            Option<Address>,
+        )>(10);
+
+        // Start translator
+        let start_handle = start(downstreams_rx, pool_tx.clone())
+            .await
+            .expect("Error ");
+
+        // Create channels for interacting with downstream
+        let (sender_to_translator_downstream, receive_in_translator_downstream) = mpsc::channel(10);
+        let (send_to_mock_miner, receive_in_mock_miner) = mpsc::channel(10);
+
+        // Create mock miner client ip
+        let miner_ip: IpAddr = "127.0.0.1".parse().expect("Unable to parse IP address");
+
+        // Sample sv1 messages
+        let mining_subscribe_message =
+            "{\"id\": 1, \"method\": \"mining.subscribe\", \"params\": [\"cpuminer/2.5.1\"]}\n"
+                .to_string();
+        let _submit_msg = r#"{"id": 3, "method": "mining.submit", "params": [“username”, “4f”, “fe36a31b” “504e86ed”,“e9695791”]}"#.to_string();
+
+        // Use sender_to_translator_downstream to send message (received by receive_in_translator_downstream) to the downstream which will get translated by bridge and then send the sv2 message to the pool.
+        // The translator downstream then sends pool message sent back to the miner in string format (pool -> bridge-> miner) using send_to_mock_miner (received by receive_in_mock_miner);
+        sender_to_translator_downstream
+            .send(mining_subscribe_message.clone())
+            .await
+            .expect("Error sending subscribe message");
+
+        // Make downstreams_tx to communicate using send_to_mock_miner and receive_in_translator_downstream
+        downstreams_tx
+            .send((
+                send_to_mock_miner.clone(),
+                receive_in_translator_downstream,
+                miner_ip,
+            ))
+            .await
+            .expect("Error sending subscribe message");
+        // let (sender_to_pool, mut receive_in_mock_miner_pool) = mpsc::channel(10);
+        // let (send_to_mock_miner_pool, receive_in_pool) = mpsc::channel(10);
+        // pool_tx
+        //     .send((sender_to_pool.clone(), receive_in_pool, None))
+        //     .await
+        //     .expect("Error sending subscribe message");
+
+        // let hashed: Target = [255_u8; 32].into();
+        // let t = SetTarget {
+        //     channel_id: 1,
+        //     maximum_target: hashed.into(),
+        // };
+        // send_to_mock_miner_pool
+        //     .send(Mining::SetTarget(t))
+        //     .await
+        //     .expect("Error sending Target");
+
+        // Receive message sent by downstream here
+        let (_send, mut receive, _) = pool_rx.recv().await.unwrap();
+        let response = receive.recv().await.unwrap();
+        info!("Received: {:?}", response);
+
+        if start_handle.is_finished() {
+            drop(start_handle);
+        }
+    }
+}

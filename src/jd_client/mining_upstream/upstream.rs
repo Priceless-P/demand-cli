@@ -558,3 +558,69 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
         ))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use roles_logic_sv2::mining_sv2::SubmitSharesSuccess;
+
+    fn get_submit_share_extended() -> SubmitSharesSuccess {
+        let submit_shares_success = roles_logic_sv2::mining_sv2::SubmitSharesSuccess {
+            channel_id: 1,
+            last_sequence_number: 42,
+            new_shares_sum: 1,
+            new_submits_accepted_count: 2,
+        };
+
+        submit_shares_success
+    }
+    #[tokio::test]
+    async fn test_jb_client_upstream() {
+        tracing_subscriber::fmt::init();
+        let min_extranonce_size = 16;
+        let pool_signature = "test_pool_signature".to_string();
+        let (sender, mut rx) = tokio::sync::mpsc::channel(10);
+        let (tx, receiver) = tokio::sync::mpsc::channel(10);
+
+        // Create a new upstream
+        let upstream = Upstream::new(min_extranonce_size, pool_signature.clone(), sender)
+            .await
+            .expect("Failed to create upstream");
+
+        // Check if the upstream is initialized correctly
+        upstream
+            .safe_lock(|upstream| {
+                assert_eq!(upstream.min_extranonce_size, min_extranonce_size);
+                assert_eq!(upstream.pool_signature, pool_signature);
+            })
+            .unwrap();
+
+        let mining_message = Mining::SubmitSharesSuccess(get_submit_share_extended());
+
+        tx.send(mining_message.clone()).await.unwrap();
+        info!("Here");
+
+        // Call parse_incoming to start handling messages
+        let handle = Upstream::parse_incoming(upstream, receiver).await.unwrap();
+
+        // Simulate the downstream receiving the message
+
+        if let Some(downstream_message) = rx.recv().await {
+            info!("Here");
+            if let Mining::SubmitSharesSuccess(success) = downstream_message {
+                assert_eq!(
+                    success.last_sequence_number,
+                    get_submit_share_extended().last_sequence_number
+                );
+                assert_eq!(
+                    success.new_shares_sum,
+                    get_submit_share_extended().new_shares_sum
+                );
+                info!("Done")
+            }
+        }
+        if handle.is_finished() {
+            drop(handle);
+        }
+    }
+}
