@@ -326,3 +326,78 @@ impl TemplateRx {
         }
     }
 }
+
+#[cfg(test)]
+// Faile
+// Reason: Sv2Frame is not yet serialized.
+mod tests {
+    use crate::jd_client::job_declarator::test::{create_template, get_new_prev_hash, setup_jd};
+
+    use super::*;
+    use crate::jd_client::DownstreamMiningNode;
+    use bitcoin::TxOut;
+    use codec_sv2::Sv2Frame;
+    use roles_logic_sv2::parsers::{Mining, TemplateDistribution};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_start_templates_new_template_message() {
+        tracing_subscriber::fmt::init();
+        let (tx, rx) = mpsc::channel(10);
+        let (downstream_sender, mut downstream_receiver) = mpsc::channel(10);
+
+        let (jd_sender, _jd_receiver) = mpsc::channel(10);
+        let (solution_sender, _solution_receiver) = mpsc::channel(10);
+        let miner_coinbase_output = vec![TxOut::default()];
+        let (jd, _jd_abortable, upstream) = setup_jd(jd_sender).await;
+
+        // Initialize downstream
+        let downstream = Arc::new(Mutex::new(DownstreamMiningNode::new(
+            downstream_sender,
+            Some(upstream),
+            solution_sender,
+            false,
+            miner_coinbase_output,
+            Some(jd.clone()),
+        )));
+
+        // Initialize TemplateRx
+        let template_rx = TemplateRx {
+            sender: tx.clone(),
+            jd: Some(jd.clone()),
+            down: downstream,
+            new_template_message: None,
+            miner_coinbase_output: vec![],
+            test_only_do_not_send_solution_to_tp: true,
+        };
+        let template_rx = Arc::new(Mutex::new(template_rx));
+
+        // Create new_prev_hash
+        let new_template = create_template();
+        let new_prev_hash = get_new_prev_hash(new_template.template_id);
+        let frame = Sv2Frame::try_from(PoolMessages::TemplateDistribution(
+            TemplateDistribution::SetNewPrevHash(new_prev_hash.clone()),
+        ))
+        .unwrap();
+
+        // Call the start_templates fn
+        let start_template_abortable = TemplateRx::start_templates(template_rx, rx).await;
+
+        // Send the new_prev_hash frame
+        tx.send(frame.into()).await.unwrap();
+        let received = downstream_receiver.recv().await;
+        warn!("{:?}", received.as_ref().expect("No data"));
+        // Check if new_prev_hash message was handled as expected
+        if let Some(received_message) = received {
+            if let Mining::NewExtendedMiningJob(job) = received_message.into() {
+                assert_eq!(job.merkle_path, new_template.merkle_path);
+                assert_eq!(job.coinbase_tx_prefix, new_template.coinbase_tx_outputs);
+            }
+        }
+
+        if start_template_abortable.is_finished() {
+            drop(start_template_abortable);
+        }
+    }
+}

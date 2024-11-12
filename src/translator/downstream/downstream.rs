@@ -408,18 +408,134 @@ impl IsDownstream for Downstream {
     }
 }
 
-//#[cfg(test)]
-//mod tests {
-//    use super::*;
-//
-//    #[test]
-//    fn gets_difficulty_from_target() {
-//        let target = vec![
-//            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 255, 127,
-//            0, 0, 0, 0, 0,
-//        ];
-//        let actual = Downstream::difficulty_from_target(target).unwrap();
-//        let expect = 512.0;
-//        assert_eq!(actual, expect);
-//    }
-//}
+#[cfg(test)]
+mod tests {
+    use roles_logic_sv2::mining_sv2::ExtendedExtranonce;
+    use server_to_client::Notify;
+    use tokio::sync::mpsc;
+    //use crate::translator::upstream::upstream::test::{new_ext_mining_job, get_new_prev_hash};
+
+    use crate::translator::proxy::Bridge;
+
+    use super::*;
+
+    //    #[test]
+    //    fn gets_difficulty_from_target() {
+    //        let target = vec![
+    //            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 255, 127,
+    //            0, 0, 0, 0, 0,
+    //        ];
+    //        let actual = Downstream::difficulty_from_target(target).unwrap();
+    //        let expect = 512.0;
+    //        assert_eq!(actual, expect);
+    //    }
+
+    fn create_bridge(
+        extranonces: ExtendedExtranonce,
+        tx_sv1_notify: tokio::sync::broadcast::Sender<Notify<'static>>,
+    ) -> Arc<Mutex<Bridge>> {
+        let (tx_sv2_submit_shares_ext, _rx_sv2_submit_shares_ext) = channel(1);
+        let upstream_target = vec![
+            0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+        ];
+        let b = Bridge::new(
+            tx_sv2_submit_shares_ext,
+            tx_sv1_notify,
+            extranonces,
+            Arc::new(Mutex::new(upstream_target)),
+            1,
+        );
+        b
+    }
+
+    #[tokio::test]
+    async fn test_translator_downstream() {
+        //tracing_subscriber::fmt::init();
+        let (tx_sv1_bridge, rx_sv1_bridge) = channel(crate::TRANSLATOR_BUFFER_SIZE);
+
+        let (tx_sv1_notify, _rx_sv1_notify): (
+            broadcast::Sender<server_to_client::Notify>,
+            broadcast::Receiver<server_to_client::Notify>,
+        ) = broadcast::channel(crate::TRANSLATOR_BUFFER_SIZE);
+
+        //bridge: Arc<Mutex<super::super::proxy::Bridge>>,
+        //upstream_difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
+        let (downstreams_tx, downstreams_rx) = mpsc::channel(10);
+        let upstream_diff = UpstreamDifficultyConfig {
+            channel_diff_update_interval: crate::CHANNEL_DIFF_UPDTATE_INTERVAL,
+            channel_nominal_hashrate: crate::EXPECTED_SV1_HASHPOWER,
+        };
+        let upstream_difficulty_config = Arc::new(Mutex::new(upstream_diff));
+
+        let extranonces = ExtendedExtranonce::new(0..6, 6..8, 8..16);
+        let self_ = create_bridge(extranonces, tx_sv1_notify.clone());
+
+        let (_tx_sv2_set_new_prev_hash, rx_sv2_set_new_prev_hash) =
+            channel(crate::TRANSLATOR_BUFFER_SIZE);
+        let (_tx_sv2_new_ext_mining_job, rx_sv2_new_ext_mining_job) =
+            channel(crate::TRANSLATOR_BUFFER_SIZE);
+
+        let bridge_handle = Bridge::start(
+            self_.clone(),
+            rx_sv2_set_new_prev_hash,
+            rx_sv2_new_ext_mining_job,
+            rx_sv1_bridge,
+        )
+        .await
+        .unwrap();
+
+        let downstream = Downstream::accept_connections(
+            tx_sv1_bridge,
+            tx_sv1_notify,
+            self_,
+            upstream_difficulty_config,
+            downstreams_rx,
+        )
+        .await
+        .expect("Error initializing downstream");
+        // tx_sv2_set_new_prev_hash
+        //     .send(get_new_prev_hash())
+        //     .await
+        //     .unwrap();
+        // let (_, new_ext_mining_job) = new_ext_mining_job();
+        //     tx_sv2_new_ext_mining_job
+        //     .send(new_ext_mining_job)
+        //     .await
+        //     .unwrap();
+
+        let mining_subscribe_message =
+            "{\"id\": 1, \"method\": \"mining.subscribe\", \"params\": [\"cpuminer/2.5.1\"]}"
+                .to_string();
+
+        let _submit_msg = r#"{"id": 3, "method": "mining.submit", "params": [“username”, “4f”, “fe36a31b” “504e86ed”,“e9695791”]}"#.to_string();
+        let (sender_to_translator_downstream, mut receive_in_mock_miner) = mpsc::channel(10);
+        let (send_to_mock_miner, receive_in_translator_downstream) = mpsc::channel(10);
+
+        send_to_mock_miner
+            .send(mining_subscribe_message.clone())
+            .await
+            .expect("Error sending subscribe message");
+
+        let miner_ip: IpAddr = "127.0.0.1".parse().expect("Unable to parse IP address");
+
+        downstreams_tx
+            .send((
+                sender_to_translator_downstream.clone(),
+                receive_in_translator_downstream,
+                miner_ip,
+            ))
+            .await
+            .expect("Error sending subscribe message");
+
+        let response = receive_in_mock_miner.recv().await.unwrap();
+        info!("Received: {:?}", response);
+
+        if downstream.is_finished() {
+            drop(downstream);
+        }
+        if bridge_handle.is_finished() {
+            drop(bridge_handle);
+        }
+    }
+}

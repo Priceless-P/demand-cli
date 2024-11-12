@@ -682,7 +682,7 @@ mod test {
         submit_shares_extended
     }
 
-    fn get_new_prev_hash() -> Mining<'static> {
+    fn get_new_prev_hash() -> SetNewPrevHash<'static> {
         let new_prev_hash = SetNewPrevHash {
             channel_id: 1,
             job_id: 0,
@@ -694,10 +694,10 @@ mod test {
             min_ntime: 989898,
             nbits: 9,
         };
-        Mining::SetNewPrevHash(new_prev_hash)
+        new_prev_hash
     }
 
-    fn new_ext_mining_job() -> (Vec<u8>, Mining<'static>) {
+    fn new_ext_mining_job() -> (Vec<u8>, NewExtendedMiningJob<'static>) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -737,7 +737,7 @@ mod test {
             coinbase_tx_prefix: tx[0..42].to_vec().try_into().unwrap(),
             coinbase_tx_suffix: tx[58..].to_vec().try_into().unwrap(),
         };
-        (tx, Mining::NewExtendedMiningJob(new_ext_mining_job))
+        (tx, new_ext_mining_job)
     }
 
     #[tokio::test]
@@ -749,7 +749,7 @@ mod test {
         let (tx_sv2_set_new_prev_hash, mut rx_sv2_set_new_prev_hash) = mpsc::channel(10);
         let (tx_sv2_new_ext_mining_job, mut rx_sv2_new_ext_mining_job) = mpsc::channel(10);
         let min_extranonce_size: u16 = 8;
-        let (tx_sv2_extranonce, mut rx_sv2_extranonce) = mpsc::channel(10);
+        let (tx_sv2_extranonce, _rx_sv2_extranonce) = mpsc::channel(10);
         let target = Arc::new(Mutex::new([255_u8; 32].to_vec()));
         let difficulty_config = Arc::new(Mutex::new(upstream_dif));
         let (sender, mut receiver) = mpsc::channel(10);
@@ -793,7 +793,7 @@ mod test {
         // incoming receiver is passed to Upstream::Start, which gets passed to Upstream::parse_message.
         // Use incoming_sender to send messages to it
         incoming_sender
-            .send(get_new_prev_hash())
+            .send(Mining::SetNewPrevHash(get_new_prev_hash()))
             .await
             .expect("Error sending new prev hash");
 
@@ -809,7 +809,7 @@ mod test {
 
         // Send mining job
         incoming_sender
-            .send(new_mining_job)
+            .send(Mining::NewExtendedMiningJob(new_mining_job))
             .await
             .expect("Error sending new_ext_mining_job");
 

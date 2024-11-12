@@ -453,3 +453,181 @@ impl JobDeclarator {
             .expect("JDC Sub solution receiver unavailable");
     }
 }
+
+#[cfg(test)]
+pub mod test {
+    use std::{net::ToSocketAddrs, sync::Arc};
+
+    use key_utils::Secp256k1PublicKey;
+    use roles_logic_sv2::{parsers::Mining, utils::Mutex};
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::jd_client::mining_upstream::Upstream;
+
+    // Helper to create the JobDeclarator instance
+    pub async fn setup_jd(
+        up_sender: mpsc::Sender<Mining<'static>>,
+    ) -> (Arc<Mutex<JobDeclarator>>, AbortOnDrop, Arc<Mutex<Upstream>>) {
+        let addr = crate::POOL_ADDRESS
+            .to_socket_addrs()
+            .unwrap()
+            .next()
+            .unwrap();
+        let auth_pub_k: Secp256k1PublicKey =
+            crate::AUTH_PUB_KEY.parse().expect("Invalid public key");
+        let upstream = setup_upstream(up_sender.clone()).await;
+
+        let (jd, jd_aborter) = JobDeclarator::new(addr, auth_pub_k.into_bytes(), upstream.clone())
+            .await
+            .expect("Unable to create JobDeclarator");
+        (jd, jd_aborter, upstream)
+    }
+
+    // Helper to create the Upstream instance
+    async fn setup_upstream(up_sender: mpsc::Sender<Mining<'static>>) -> Arc<Mutex<Upstream>> {
+        Upstream::new(0, crate::POOL_SIGNATURE.to_string(), up_sender)
+            .await
+            .expect("Failed to create upstream")
+    }
+
+    // Helper to create a template
+    pub fn create_template() -> NewTemplate<'static> {
+        NewTemplate {
+            version: 1,
+            future_template: false,
+            template_id: 1,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![].try_into().unwrap(),
+            coinbase_tx_input_sequence: 0,
+            coinbase_tx_value_remaining: 500,
+            coinbase_tx_outputs: vec![].try_into().unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+            coinbase_tx_outputs_count: 1,
+        }
+    }
+
+    // Helper to create a new prev hash
+    pub fn get_new_prev_hash(template_id: u64) -> SetNewPrevHash<'static> {
+        let prev_hash = SetNewPrevHash {
+            prev_hash: [
+                3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3,
+            ]
+            .into(),
+            n_bits: 9,
+            template_id,
+            header_timestamp: 989898,
+            target: vec![0; 32].try_into().unwrap(),
+        };
+        prev_hash
+    }
+
+    #[tokio::test]
+    async fn test_jd_client_get_last_token() {
+        let (up_sender, _) = mpsc::channel(10);
+        let (jd, _jd_abortable, _) = setup_jd(up_sender).await;
+        let last_token = JobDeclarator::get_last_token(&jd).await;
+        assert_ne!(last_token.mining_job_token.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_jd_client_on_new_template() {
+        let (up_sender, _) = mpsc::channel(10);
+        let (jd, _jd_abortable, _) = setup_jd(up_sender).await;
+
+        let template = create_template();
+        let last_token = JobDeclarator::get_last_token(&jd).await;
+        let coinbase_pool_output = last_token.coinbase_output.to_vec();
+
+        JobDeclarator::on_new_template(
+            &jd,
+            template.clone(),
+            last_token.mining_job_token.to_vec(),
+            vec![].try_into().unwrap(),
+            vec![].try_into().unwrap(),
+            coinbase_pool_output.clone(),
+        )
+        .await;
+
+        let updated_declare_job = jd
+            .clone()
+            .safe_lock(|s| s.last_declare_mining_jobs_sent.clone())
+            .expect("Failed to lock jd for last_declare_mining_jobs_sent");
+
+        // Check that last declare job is same as template we created
+        let updated_declare_job = updated_declare_job.get(&1).unwrap().clone().unwrap();
+        assert_eq!(updated_declare_job.template.version, template.version);
+        assert_eq!(
+            updated_declare_job.coinbase_pool_output,
+            coinbase_pool_output
+        );
+    }
+
+    #[tokio::test]
+    async fn test_jd_client_on_set_new_prev_hash() {
+        let (up_sender, _) = mpsc::channel(10);
+        let (jd, _jd_abortable, _) = setup_jd(up_sender).await;
+
+        JobDeclarator::on_set_new_prev_hash(jd.clone(), get_new_prev_hash(1)).await;
+
+        let set_new_prev_hash_counter = jd
+            .clone()
+            .safe_lock(|s| s.set_new_prev_hash_counter.clone())
+            .expect("Failed to lock jd for set_new_prev_hash_counter");
+        assert_eq!(set_new_prev_hash_counter, 0);
+
+        // check that future jobs is empty
+        let future_jobs = jd
+            .clone()
+            .safe_lock(|s| s.future_jobs.clone())
+            .expect("Failed to lock jd for future_jobs");
+        assert!(future_jobs.is_empty(), "Expected future_jobs to be cleared");
+    }
+
+    #[tokio::test]
+    // Fails
+    // Reason: Disconnected from client while reading : early eof - 98.67.129.74:2000
+    async fn test_jd_client_jd_on_solution() {
+        let (up_sender, mut receiver) = mpsc::channel(10);
+        let (jd, _jd_abortable, _) = setup_jd(up_sender.clone()).await;
+
+        let solution = SubmitSharesExtended {
+            extranonce: vec![1, 2, 3].try_into().unwrap(),
+            ntime: 0,
+            nonce: 0,
+            version: 0,
+            channel_id: 1,
+            sequence_number: 0,
+            job_id: 1,
+        };
+
+        // Insert a previous hash for testing
+        jd.clone()
+            .safe_lock(|s| s.last_set_new_prev_hash = Some(get_new_prev_hash(1)))
+            .expect("Failed to set new prev hash");
+
+        JobDeclarator::on_solution(&jd, solution.clone()).await;
+
+        // Check that the submitshareextended msg received contains same value as solution
+        if let Some(received) = receiver.recv().await {
+            if let Mining::SubmitSharesExtended(submit_solution) = received.into() {
+                assert_eq!(
+                    submit_solution.extranonce, solution.extranonce,
+                    "Extranonce mismatch"
+                );
+                assert_eq!(submit_solution.ntime, solution.ntime, "Ntime mismatch");
+                assert_eq!(submit_solution.nonce, solution.nonce, "Nonce mismatch");
+                assert_eq!(
+                    submit_solution.version, solution.version,
+                    "Version mismatch"
+                );
+            } else {
+                panic!("Expected SubmitSolution frame, got something else");
+            }
+        } else {
+            panic!("No frame received, expected SubmitSolution frame");
+        }
+    }
+}

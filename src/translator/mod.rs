@@ -185,7 +185,7 @@ mod tests {
 
         // Create channels for interacting with downstream
         let (sender_to_translator_downstream, receive_in_translator_downstream) = mpsc::channel(10);
-        let (send_to_mock_miner, receive_in_mock_miner) = mpsc::channel(10);
+        let (send_to_mock_miner, _receive_in_mock_miner) = mpsc::channel(10);
 
         // Create mock miner client ip
         let miner_ip: IpAddr = "127.0.0.1".parse().expect("Unable to parse IP address");
