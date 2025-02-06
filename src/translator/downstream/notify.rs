@@ -96,9 +96,10 @@ pub async fn start_notify(
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
-            // TODO here we want to be sure that on drop this is called
-            let _ = Downstream::remove_downstream_hashrate_from_channel(&downstream);
             // TODO here we want to kill the tasks
+            // For this maybe we can be track of notify tasks seperately,
+            // Like `let notify_task =TaskManager::initilaze_notify()`
+            // That way we can drop `notify_task` when the downstream disconnect
             warn!(
                 "Downstream: Shutting down sv1 downstream job notifier for {}",
                 &host

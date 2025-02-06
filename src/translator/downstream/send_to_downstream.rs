@@ -1,4 +1,4 @@
-use super::task_manager::TaskManager;
+use super::{task_manager::TaskManager, Downstream};
 use crate::translator::error::Error;
 use roles_logic_sv2::utils::Mutex;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ pub async fn start_send_to_downstream(
     send_to_down: mpsc::Sender<String>,
     connection_id: u32,
     host: String,
+    downstream: Arc<Mutex<Downstream>>,
 ) -> Result<(), Error<'static>> {
     let handle = task::spawn(async move {
         while let Some(res) = receiver_outgoing.recv().await {
@@ -32,6 +33,10 @@ pub async fn start_send_to_downstream(
             "Downstream: Shutting down sv1 downstream writer: {}",
             connection_id
         );
+        // Here we want to be sure that on drop this is called to removed disconnected mining device hashrate from total hashrate
+        if let Err(e) = Downstream::remove_downstream_hashrate_from_channel(&downstream) {
+            error!("Error wile removing hashrate: {e}")
+        };
     });
     TaskManager::add_send_downstream(task_manager, handle.into())
         .await

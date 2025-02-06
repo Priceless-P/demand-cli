@@ -1,8 +1,10 @@
 use std::fmt::Display;
+use std::sync::PoisonError;
 
 use sv1_api::utils::HexU32Be;
 use tokio::task::AbortHandle;
 use tokio::task::JoinHandle;
+use tracing::info;
 
 #[derive(Debug)]
 pub struct AbortOnDrop {
@@ -56,5 +58,31 @@ pub struct UserId(pub i64);
 impl Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// Retrieves the `USER_ID` from the global mutex, which is initialized from the `USER_ID` env var.
+/// If the `USER_ID` env var is set, it logs (if log_enabled) and returns the value.
+/// If `USER_ID` is `None`, it generates a fallback ID, logs it (if log_enabled), and returns it.
+/// If the mutex is poisoned, it propagates the `PoisonError`.
+pub fn get_user_id(
+    log_enabled: bool,
+) -> Result<String, PoisonError<std::sync::MutexGuard<'static, Option<String>>>> {
+    match crate::USER_ID.safe_lock(|tp| tp.clone()) {
+        Ok(user_id) => {
+            if let Some(user_identity) = user_id {
+                if log_enabled {
+                    info!("Using provided USER_ID: {}", user_identity);
+                }
+                Ok(user_identity)
+            } else {
+                let fallback_user_id = format!("dmnd-cli-{}", rand::random::<u8>());
+                if log_enabled {
+                    info!("USER_ID not found. Using: {}", fallback_user_id);
+                }
+                Ok(fallback_user_id)
+            }
+        }
+        Err(e) => Err(e),
     }
 }

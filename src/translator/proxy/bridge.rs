@@ -6,7 +6,7 @@ use roles_logic_sv2::{
         ExtendedExtranonce, NewExtendedMiningJob, SetNewPrevHash, SubmitSharesExtended, Target,
     },
     parsers::Mining,
-    utils::{GroupId, Mutex},
+    utils::{GroupId, Id, Mutex},
 };
 use std::sync::Arc;
 use sv1_api::{client_to_server::Submit, server_to_client, utils::HexU32Be};
@@ -54,6 +54,7 @@ pub struct Bridge {
     last_p_hash: Option<SetNewPrevHash<'static>>,
     target: Arc<Mutex<Vec<u8>>>,
     last_job_id: u32,
+    sequence: Id,
 }
 
 impl Bridge {
@@ -100,6 +101,7 @@ impl Bridge {
             last_p_hash: None,
             target,
             last_job_id: 0,
+            sequence: Id::new(), // Initialize here to make sure it increases on subsquent calls
         })))
     }
 
@@ -310,7 +312,7 @@ impl Bridge {
     /// Translates a SV1 `mining.submit` message to a SV2 `SubmitSharesExtended` message.
     #[allow(clippy::result_large_err)]
     fn translate_submit(
-        &self,
+        &mut self,
         channel_id: u32,
         sv1_submit: Submit,
         version_rolling_mask: Option<HexU32Be>,
@@ -331,10 +333,10 @@ impl Bridge {
         };
         let mining_device_extranonce: Vec<u8> = sv1_submit.extra_nonce2.into();
         let extranonce2 = mining_device_extranonce;
+
         Ok(SubmitSharesExtended {
             channel_id,
-            // I put 0 below cause sequence_number is not what should be TODO
-            sequence_number: 0,
+            sequence_number: self.sequence.next(),
             job_id: sv1_submit.job_id.parse::<u32>().expect("Internal error: this operation can not fail because job_id can always be converted into U32"),
             nonce: sv1_submit.nonce.0,
             ntime: sv1_submit.time.0,

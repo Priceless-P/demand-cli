@@ -269,7 +269,17 @@ impl PoolLatency {
                         self.setup_a_channel = Some(setup_channel_timer.elapsed());
                         let (send_to_down, mut recv_from_down) = tokio::sync::mpsc::channel(10);
                         let (send_from_down, recv_to_up) = tokio::sync::mpsc::channel(10);
-                        let channel = open_channel();
+
+                        // Get user_identity
+                        let user_identity = match crate::shared::utils::get_user_id(false) {
+                            Ok(user_identity) => user_identity,
+                            Err(e) => {
+                                error!("Failed to acquire USER_ID mutex lock: {e}");
+                                return Err(());
+                            }
+                        };
+
+                        let channel = open_channel(user_identity);
                         if send_from_down
                             .send(PoolExtMessages::Mining(channel))
                             .await
@@ -397,14 +407,13 @@ impl PoolLatency {
 }
 
 // Helper functions
-fn open_channel() -> Mining<'static> {
+fn open_channel(user_id: String) -> Mining<'static> {
     roles_logic_sv2::parsers::Mining::OpenExtendedMiningChannel(
         roles_logic_sv2::mining_sv2::OpenExtendedMiningChannel {
             request_id: 0,
             max_target: binary_sv2::u256_from_int(u64::MAX),
             min_extranonce_size: 8,
-            user_identity: "ABC"
-                .to_string()
+            user_identity: user_id
                 .try_into()
                 // This can never fail
                 .expect("Failed to convert user identity to string"),

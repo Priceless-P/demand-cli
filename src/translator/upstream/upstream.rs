@@ -18,7 +18,7 @@ use roles_logic_sv2::{
     parsers::Mining,
     routing_logic::{MiningRoutingLogic, NoRouting},
     selectors::NullDownstreamMiningSelector,
-    utils::Mutex,
+    utils::{Id, Mutex},
     Error as RolesLogicError,
 };
 use std::{
@@ -86,6 +86,8 @@ pub struct Upstream {
     // than the configured percentage
     pub(super) difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
     pub sender: TSender<Mining<'static>>,
+    // To dynamicall generate and hanlde request id
+    request_id: Id,
 }
 
 impl PartialEq for Upstream {
@@ -123,6 +125,7 @@ impl Upstream {
             target,
             difficulty_config,
             sender,
+            request_id: Id::new(),
         })))
     }
 
@@ -171,10 +174,25 @@ impl Upstream {
                     .map_err(|_e| Error::TranslatorDiffConfigMutexPoisoned)
             })
             .map_err(|_e| Error::TranslatorUpstreamMutexPoisoned)??;
-        let user_identity = "ABC".to_string().try_into().expect("Internal error: this operation can not fail because the string ABC can always be converted into Inner");
+
+        // Get user_identity
+        let user_id = match crate::shared::utils::get_user_id(true) {
+            Ok(user_identity) => user_identity,
+            Err(e) => {
+                error!("Failed to acquire USER_ID mutex lock: {e}");
+                return Err(Error::RolesSv2Logic(roles_logic_sv2::Error::PoisonLock(
+                    e.to_string(),
+                )));
+            }
+        };
+
+        // Get request_id
+        let request_id = self_
+            .safe_lock(|upstream| upstream.request_id.next())
+            .map_err(|_| Error::TranslatorUpstreamMutexPoisoned)?;
         let open_channel = Mining::OpenExtendedMiningChannel(OpenExtendedMiningChannel {
-            request_id: 0, // TODO
-            user_identity, // TODO
+            request_id,
+            user_identity: user_id.try_into().expect("Internal error: this operation can not fail because the string ABC can always be converted into Inner"),
             nominal_hash_rate,
             max_target: u256_max(),
             min_extranonce_size: crate::MIN_EXTRANONCE2_SIZE,

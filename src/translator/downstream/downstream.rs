@@ -134,6 +134,7 @@ impl Downstream {
             send_to_down,
             connection_id,
             host.clone(),
+            downstream.clone(),
         )
         .await
         {
@@ -195,7 +196,6 @@ impl Downstream {
         message_sv1: json_rpc::Message,
     ) -> Result<(), super::super::error::Error<'static>> {
         // `handle_message` in `IsServer` trait + calls `handle_request`
-        // TODO: Map err from V1Error to Error::V1Error
 
         let response = self_.safe_lock(|s| s.handle_message(message_sv1.clone()))?;
         match response {
@@ -216,7 +216,7 @@ impl Downstream {
             }
             Err(e) => {
                 error!("{e}");
-                Err(Error::V1Protocol(e))
+                Err(Error::V1Protocol(e)) // Map err from V1Error to Error::V1Error
             }
         }
     }
