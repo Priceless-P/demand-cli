@@ -75,7 +75,6 @@ pub struct JobDeclarator {
     pub coinbase_tx_prefix: B064K<'static>,
     pub coinbase_tx_suffix: B064K<'static>,
     pub task_manager: Arc<Mutex<TaskManager>>,
-    pub is_token_updated: Arc<Mutex<bool>>, // to signify when token becomes updated
 }
 
 impl JobDeclarator {
@@ -118,7 +117,6 @@ impl JobDeclarator {
             coinbase_tx_suffix: vec![].try_into().expect("Internal error: this operation can not fail because Vec can always be converted into Inner"),
             set_new_prev_hash_counter: 0,
             task_manager,
-            is_token_updated: Arc::new(Mutex::new(false)),
         }));
 
         Self::allocate_tokens(&self_, 2).await;
@@ -336,6 +334,9 @@ impl JobDeclarator {
                         let merkle_path = last_declare.template.merkle_path.clone();
                         let template = last_declare.template;
 
+                        // TODO where we should have a sort of signaling that is green after
+                        // that the token has been updated so that on_set_new_prev_hash know it
+                        // and can decide if send the set_custom_job or not
                         if is_future {
                             last_declare_mining_job_sent.mining_job_token = new_token;
                             if let Err(e) = self_mutex.safe_lock(|s| {
@@ -348,13 +349,6 @@ impl JobDeclarator {
                                         last_declare.coinbase_pool_output,
                                     ),
                                 );
-                                // Set is_token_updated to true
-                                if s.is_token_updated
-                                    .safe_lock(|is_updated| *is_updated = true)
-                                    .is_err()
-                                {
-                                    error!("Failed to set is_token_updated flag to true")
-                                };
                             }) {
                                 error!("{e}");
                                 ProxyState::update_jd_state(JdState::Down);
@@ -448,56 +442,38 @@ impl JobDeclarator {
                 return;
             };
             let (job, up, merkle_path, template, mut pool_outs) = loop {
-                // Retrieve is_token_updated flag
-                let is_token_updated = match self_mutex.safe_lock(|s| s.is_token_updated.clone()) {
-                    Ok(is_token_updated_mutex) => match is_token_updated_mutex.safe_lock(|t| *t) {
-                        Ok(is_token_updated) => is_token_updated,
-                        Err(e) => {
-                            error!("{e}: {}", Error::JobDeclaratorMutexCorrupted);
-                            return;
-                        }
-                    },
-                    Err(e) => {
-                        error!("{e}: {}", Error::JobDeclaratorMutexCorrupted);
+                match self_mutex.safe_lock(|s| {
+                    if s.set_new_prev_hash_counter > 1
+                        && s.last_set_new_prev_hash != Some(set_new_prev_hash.clone())
+                    //it means that a new prev_hash is arrived while the previous hasn't exited the loop yet
+                    {
+                        s.set_new_prev_hash_counter -= 1;
+                        Some(None)
+                    } else {
+                        s.future_jobs
+                            .remove(&id)
+                            .map(|(job, merkle_path, template, pool_outs)| {
+                                s.future_jobs = HashMap::with_hasher(BuildNoHashHasher::default());
+                                s.set_new_prev_hash_counter -= 1;
+                                Some((job, s.up.clone(), merkle_path, template, pool_outs))
+                            })
+                    }
+                }) {
+                    Ok(Some(Some(future_job_tuple))) => break future_job_tuple,
+                    Ok(Some(None)) => {
+                        // No future jobs
+                        error!(
+                            "{}",
+                            Error::RolesSv2Logic(roles_logic_sv2::errors::Error::NoFutureJobs,)
+                        );
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        error!("{}", Error::JobDeclaratorMutexCorrupted);
                         return;
                     }
                 };
-                // Check if token has been updated
-                if is_token_updated {
-                    match self_mutex.safe_lock(|s| {
-                        if s.set_new_prev_hash_counter > 1
-                            && s.last_set_new_prev_hash != Some(set_new_prev_hash.clone())
-                        //it means that a new prev_hash is arrived while the previous hasn't exited the loop yet
-                        {
-                            s.set_new_prev_hash_counter -= 1;
-                            Some(None)
-                        } else {
-                            s.future_jobs.remove(&id).map(
-                                |(job, merkle_path, template, pool_outs)| {
-                                    s.future_jobs =
-                                        HashMap::with_hasher(BuildNoHashHasher::default());
-                                    s.set_new_prev_hash_counter -= 1;
-                                    Some((job, s.up.clone(), merkle_path, template, pool_outs))
-                                },
-                            )
-                        }
-                    }) {
-                        Ok(Some(Some(future_job_tuple))) => break future_job_tuple,
-                        Ok(Some(None)) => {
-                            // No future jobs
-                            error!(
-                                "{}",
-                                Error::RolesSv2Logic(roles_logic_sv2::errors::Error::NoFutureJobs,)
-                            );
-                            return;
-                        }
-                        Ok(None) => {}
-                        Err(_) => {
-                            error!("{}", Error::JobDeclaratorMutexCorrupted);
-                            return;
-                        }
-                    }
-                }
                 tokio::task::yield_now().await;
             };
             let signed_token = job.mining_job_token.clone();
@@ -529,16 +505,10 @@ impl JobDeclarator {
 
     async fn allocate_tokens(self_mutex: &Arc<Mutex<Self>>, token_to_allocate: u32) {
         for i in 0..token_to_allocate {
-            // Get user_identity
-            let user_id = match crate::shared::utils::get_user_id(false) {
-                Ok(user_identity) => user_identity,
-                Err(e) => {
-                    error!("Failed to acquire USER_ID mutex lock: {e}");
-                    return;
-                }
-            };
             let message = JobDeclaration::AllocateMiningJobToken(AllocateMiningJobToken {
-                user_identifier: user_id.try_into().expect("Infallible operation"),
+                user_identifier: crate::shared::utils::get_user_id(false)
+                    .try_into()
+                    .expect("Infallible operation"),
                 request_id: i,
             });
             let sender = match self_mutex.safe_lock(|s| s.sender.clone()) {

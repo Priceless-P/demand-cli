@@ -216,7 +216,7 @@ impl Downstream {
             }
             Err(e) => {
                 error!("{e}");
-                Err(Error::V1Protocol(e)) // Map err from V1Error to Error::V1Error
+                Err(Error::V1Protocol(e))
             }
         }
     }
@@ -351,8 +351,6 @@ impl IsServer<'static> for Downstream {
             let to_send = SubmitShareWithChannelId {
                 channel_id: self.connection_id,
                 share: request.clone(),
-                extranonce: self.extranonce1.clone(),
-                extranonce2_len: self.extranonce2_len,
                 version_rolling_mask: self.version_rolling_mask.clone(),
             };
             if let Err(e) = self
