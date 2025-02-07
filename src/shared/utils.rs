@@ -3,6 +3,7 @@ use std::fmt::Display;
 use sv1_api::utils::HexU32Be;
 use tokio::task::AbortHandle;
 use tokio::task::JoinHandle;
+use tracing::info;
 
 #[derive(Debug)]
 pub struct AbortOnDrop {
@@ -57,4 +58,38 @@ impl Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// Attempts to get expected sv1 hashpower value (in TH/s) from env
+/// if set, it is converted to TH and returned
+/// if not, a default value is returned
+pub fn get_expected_hashpower() -> f32 {
+    const EXPECTED_SV1_HASHPOWER: f32 = 100_000_000_000_000.0;
+    std::env::var("HASHPOWER_TH")
+        .ok()
+        .and_then(|expected_sv1_hashpower| expected_sv1_hashpower.parse::<f32>().ok()) // Ccnvert to f32
+        .map(|th| {
+            let value_in_hashes = th * 1_000_000_000_000.0;
+            info!("Expected HASHPOWER_TH: {} TH", th);
+            value_in_hashes
+        }) // convert TH/s value to H/s
+        .unwrap_or_else(|| {
+            info!("Invalid or missing HASHPOWER_TH. Using default value of 100 TH.");
+            EXPECTED_SV1_HASHPOWER
+        })
+}
+
+/// Attempts to get min sv1 downstream hashrate value (in TH/s) from env
+/// if set, it is converted to TH and returned
+/// if not, a default value is returned
+pub fn get_min_downstream_hashrate() -> f32 {
+    const MIN_SV1_DOWSNTREAM_HASHRATE: f32 = 10_000_000_000_000.0;
+    std::env::var("MIN_HASHRATE")
+        .ok()
+        .and_then(|expected_sv1_hashpower| expected_sv1_hashpower.parse::<f32>().ok()) // convert to f32
+        .map(|th| th * 1_000_000_000_000.0) // convert TH/s to H/s
+        .unwrap_or_else(|| {
+            info!("Invalid or missing MIN_HASHRATE. Using default value of 10 TH.");
+            MIN_SV1_DOWSNTREAM_HASHRATE
+        })
 }

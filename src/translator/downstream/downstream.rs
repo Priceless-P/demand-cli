@@ -1,6 +1,6 @@
 use crate::{
     proxy_state::{DownstreamType, ProxyState},
-    shared::utils::AbortOnDrop,
+    shared::utils::{get_expected_hashpower, AbortOnDrop},
     translator::error::Error,
 };
 
@@ -94,7 +94,7 @@ impl Downstream {
 
         let (tx_outgoing, receiver_outgoing) = channel(crate::TRANSLATOR_BUFFER_SIZE);
         let difficulty_mgmt = DownstreamDifficultyConfig {
-            estimated_downstream_hash_rate: crate::EXPECTED_SV1_HASHPOWER,
+            estimated_downstream_hash_rate: get_expected_hashpower(),
             shares_per_minute: crate::SHARE_PER_MIN,
             submits_since_last_update: 0,
             timestamp_of_last_update: 0,

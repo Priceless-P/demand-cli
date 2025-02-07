@@ -1,3 +1,5 @@
+use crate::shared::utils::{get_expected_hashpower, get_min_downstream_hashrate};
+
 use super::{Downstream, DownstreamMessages, SetDownstreamTarget};
 use binary_sv2::U256;
 use roles_logic_sv2::{
@@ -31,10 +33,8 @@ impl Downstream {
             })
             .map_err(|_e| Error::TranslatorDiffConfigMutexPoisoned)?;
 
-        let (message, _) = target_to_sv1_message(
-            crate::EXPECTED_SV1_HASHPOWER.into(),
-            crate::SHARE_PER_MIN.into(),
-        )?;
+        let (message, _) =
+            target_to_sv1_message(get_expected_hashpower().into(), crate::SHARE_PER_MIN.into())?;
         Downstream::send_message_downstream(self_.clone(), message).await;
 
         Ok(())
@@ -82,8 +82,7 @@ impl Downstream {
         .map_err(Error::TargetError)?;
 
         if let Some(estimated_hash_rate) = Self::update_downstream_hashrate(self_, prev_target)? {
-            let estimated_hash_rate =
-                f32::max(estimated_hash_rate, crate::MIN_SV1_DOWSNTREAM_HASHRATE);
+            let estimated_hash_rate = f32::max(estimated_hash_rate, get_min_downstream_hashrate());
             Self::update_diff_setting(
                 self_,
                 down_diff_config.shares_per_minute,
