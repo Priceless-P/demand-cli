@@ -55,6 +55,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           rust-version: stable
+      
+      # Install mingw-w64 which provides the GNU linker and toolchain
+      - name: Install mingw-w64
+        run: choco install mingw -y
 
       # Add the GNU target.
       - name: Add Windows GNU target
