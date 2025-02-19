@@ -1,10 +1,9 @@
-name: Build demand-cli Binaries for Multiple Platforms
+name: Build demand-cli binaries for Linux and macOS 
 
 on:
   push:
     branches:
       - master
-      - add-github-action-script
   pull_request:
     branches:
       - master
@@ -39,45 +38,6 @@ jobs:
           name: linux-artifact
           path: demand-cli-linux
 
-  build-windows:
-    name: Build Windows Binary
-    runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      # Using bash on Windows (Git Bash is available) for the text replacement.
-      - name: Update POOL_ADDRESS in src/main.rs
-        shell: bash
-        run: sed -i 's/mining\.dmnd\.work:2000/k8s-default-pool-de2d9b37ea-6bc40843aed871f2.elb.eu-central-1.amazonaws.com:2000/g' src/main.rs
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          rust-version: stable
-      
-      # Install mingw-w64 which provides the GNU linker and toolchain
-      - name: Install mingw-w64
-        run: choco install mingw -y
-
-      # Add the GNU target.
-      - name: Add Windows GNU target
-        run: rustup target add x86_64-pc-windows-gnu
-
-      - name: Build Windows Binary (GNU)
-        run: cargo build --release --target=x86_64-pc-windows-gnu
-
-      # Rename the Windows binary using PowerShell.
-      - name: Rename Windows Binary
-        shell: pwsh
-        run: Rename-Item -Path "target\release\demand-cli.exe" -NewName "demand-cli-windows.exe"
-
-      - name: Upload Windows Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-artifact
-          path: demand-cli-windows.exe
-
   build-macos:
     name: Build macOS Binary
     runs-on: macos-latest
@@ -108,19 +68,13 @@ jobs:
 
   create-release:
     name: Create GitHub Release and Upload Binaries
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux Artifact
         uses: actions/download-artifact@v3
         with:
           name: linux-artifact
-          path: .
-
-      - name: Download Windows Artifact
-        uses: actions/download-artifact@v3
-        with:
-          name: windows-artifact
           path: .
 
       - name: Download macOS Artifact
@@ -134,7 +88,6 @@ jobs:
         with:
           files: |
             demand-cli-linux
-            demand-cli-windows.exe
             demand-cli-macos
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
