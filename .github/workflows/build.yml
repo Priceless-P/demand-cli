@@ -72,6 +72,27 @@ jobs:
     needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          rust-version: stable
+
+      - name: Install cargo-release
+        run: cargo install cargo-release
+
+      - name: Create a new tag based on Cargo.toml version
+        run: |
+          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r .packages[0].version)
+          if ! git rev-parse "v$VERSION" >/dev/null 2>&1; then
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          else
+            echo "Tag v$VERSION already exists, skipping."
+          fi
+
       - name: Download Linux Artifact
         uses: actions/download-artifact@v4
         with:
