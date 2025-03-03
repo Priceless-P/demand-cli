@@ -1,0 +1,129 @@
+name: Build demand-cli binaries for Linux and macOS 
+
+on:
+  push:
+    branches:
+      - master
+      - build-binaries_windows
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Linux Binary
+        run: cargo build --release
+
+      - name: Rename Linux Binary
+        run: mv target/release/demand-cli demand-cli-linux
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifact
+          path: demand-cli-linux
+
+  build-macos:
+    name: Build macOS Binary
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build macOS Binary
+        run: cargo build --release
+
+      - name: Rename macOS Binary
+        run: mv target/release/demand-cli demand-cli-macos
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifact
+          path: demand-cli-macos
+
+  build-windows:
+    name: Build Windows Binary
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Windows Binary
+        run: cargo build --release
+
+      - name: Rename Windows Binary
+        run: move target\release\demand-cli.exe demand-cli-windows.exe
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifact
+          path: demand-cli-windows.exe
+
+  create-release:
+    name: Create GitHub Release and Upload Binaries
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-release
+        run: cargo install cargo-release
+
+      - name: Create a new tag based on Cargo.toml version
+        run: |
+          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r .packages[0].version)
+          
+          # Check if the tag already exists remotely
+          if git ls-remote --tags origin | grep -q "refs/tags/v$VERSION"; then
+            echo "Tag v$VERSION already exists, skipping tag creation."
+          else
+            git tag "v$VERSION"
+            git push origin "v$VERSION"
+          fi
+          
+          echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
+
+
+      - name: Download Linux Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifact
+          path: .
+
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-artifact
+          path: .
+
+      - name: Create GitHub Release and Upload Binaries
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            demand-cli-linux
+            demand-cli-macos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

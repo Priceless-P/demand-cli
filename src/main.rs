@@ -1,7 +1,8 @@
-// use async_recursion::async_recursion;
+#[cfg(not(target_os = "windows"))]
 use jemallocator::Jemalloc;
 use router::Router;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+#[cfg(not(target_os = "windows"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
@@ -26,17 +27,15 @@ const TRANSLATOR_BUFFER_SIZE: usize = 32;
 const MIN_EXTRANONCE_SIZE: u16 = 6;
 const MIN_EXTRANONCE2_SIZE: u16 = 5;
 const UPSTREAM_EXTRANONCE1_SIZE: usize = 15;
-const EXPECTED_SV1_HASHPOWER: f32 = 100_000_000_000_000.0;
-//const EXPECTED_SV1_HASHPOWER: f32 = 1_000_0.0;
+//const EXPECTED_SV1_HASHPOWER: f32 = 100_000_000_000_000.0;
+const EXPECTED_SV1_HASHPOWER: f32 = 1_000_0.0;
 const SHARE_PER_MIN: f32 = 10.0;
 const CHANNEL_DIFF_UPDTATE_INTERVAL: u32 = 10;
 const MIN_SV1_DOWSNTREAM_HASHRATE: f32 = 10_000_000_000_000.0;
 //const MIN_SV1_DOWSNTREAM_HASHRATE: f32 = 1_000_0.0;
 const MAX_LEN_DOWN_MSG: u32 = 10000;
 const POOL_ADDRESS: &str = "mining.dmnd.work:2000";
-//const POOL_ADDRESS: &str = "127.0.0.1:20000";
-//const AUTH_PUB_KEY: &str = "9bQHWXsQ2J9TRFTaxRh3KjoxdyLRfWVEy25YHtKF8y8gotLoCZZ";
-const AUTH_PUB_KEY: &str = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
+const AUTH_PUB_KEY: &str = "9bQHWXsQ2J9TRFTaxRh3KjoxdyLRfWVEy25YHtKF8y8gotLoCZZ";
 //const TP_ADDRESS: &str = "127.0.0.1:8442";
 const DEFAULT_LISTEN_ADDRESS: &str = "0.0.0.0:32767";
 
