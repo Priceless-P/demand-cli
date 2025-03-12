@@ -402,6 +402,7 @@ impl IsServer<'static> for Downstream {
                     job,
                     self.difficulty_mgmt.current_difficulty,
                     self.extranonce1.clone(),
+                    self.version_rolling_mask.clone(),
                 ) {
                     let to_send = SubmitShareWithChannelId {
                         channel_id: self.connection_id,

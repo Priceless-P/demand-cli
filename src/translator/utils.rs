@@ -70,6 +70,7 @@ pub fn validate_share(
     job: &Notify,
     difficulty: f32,
     extranonce1: Vec<u8>,
+    version_rolling_mask: Option<sv1_api::utils::HexU32Be>,
 ) -> bool {
     // Check job ID match
     if request.job_id != job.job_id {
@@ -90,9 +91,20 @@ pub fn validate_share(
     extranonce.extend_from_slice(request.extra_nonce2.0.as_ref());
     let extranonce: &[u8] = extranonce.as_ref();
 
+    let job_version = job.version.0;
+    let request_version = request
+        .version_bits
+        .clone()
+        .map(|vb| vb.0)
+        .unwrap_or(job_version);
+    let mask = version_rolling_mask
+        .unwrap_or(sv1_api::utils::HexU32Be(0x1FFFE000_u32))
+        .0;
+    let version = (job_version & !mask) | (request_version & mask);
+
     let mut hash = roles_logic_sv2::utils::get_target(
         request.nonce.0,
-        job.version.0,
+        version,
         request.time.0,
         extranonce,
         job.coin_base1.as_ref(),
