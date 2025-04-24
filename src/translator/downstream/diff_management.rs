@@ -10,7 +10,7 @@ use std::sync::Arc;
 use sv1_api::json_rpc;
 
 use bitcoin::util::uint::Uint256;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 impl Downstream {
     /// Initializes difficult managment.
@@ -146,6 +146,13 @@ impl Downstream {
     pub fn update_difficulty_and_hashrate(
         self_: &Arc<Mutex<Self>>,
     ) -> ProxyResult<'static, Option<f32>> {
+        // Check if the delay has elapsed since connection
+        let elapsed = self_.safe_lock(|d| d.connected_at.elapsed())?;
+        if elapsed < *crate::DELAY {
+            debug!("Delay not elapsed, skipping difficulty adjustments");
+            return Ok(None); // Skip adjustment if delay hasn’t passed
+        }
+
         let timestamp_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time went backwards")
