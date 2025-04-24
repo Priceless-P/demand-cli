@@ -10,7 +10,7 @@ use std::sync::Arc;
 use sv1_api::json_rpc;
 
 use bitcoin::util::uint::Uint256;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 impl Downstream {
     /// Initializes difficult managment.
@@ -20,6 +20,8 @@ impl Downstream {
 
         let (message, _) = diff_to_sv1_message(diff as f64)?;
         Downstream::send_message_downstream(self_.clone(), message).await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(crate::ARGS.delay)).await;
 
         tokio::spawn(crate::translator::utils::check_share_rate_limit());
 
@@ -146,13 +148,6 @@ impl Downstream {
     pub fn update_difficulty_and_hashrate(
         self_: &Arc<Mutex<Self>>,
     ) -> ProxyResult<'static, Option<f32>> {
-        // Check if the delay has elapsed since connection
-        let elapsed = self_.safe_lock(|d| d.connected_at.elapsed())?;
-        if elapsed < *crate::DELAY {
-            debug!("Delay not elapsed, skipping difficulty adjustments");
-            return Ok(None); // Skip adjustment if delay hasn’t passed
-        }
-
         let timestamp_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time went backwards")

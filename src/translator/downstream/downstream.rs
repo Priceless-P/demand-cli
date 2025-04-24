@@ -107,7 +107,6 @@ pub struct Downstream {
     pub last_call_to_update_hr: u128,
     pub(super) last_notify: Option<server_to_client::Notify<'static>>,
     pub(super) stats_sender: StatsSender,
-    pub connected_at: tokio::time::Instant, // Tracks connection time
 }
 
 impl Downstream {
@@ -189,7 +188,6 @@ impl Downstream {
             last_call_to_update_hr: 0,
             last_notify: last_notify.clone(),
             stats_sender,
-            connected_at: tokio::time::Instant::now(),
         }));
 
         if let Err(e) = start_receive_downstream(
@@ -364,7 +362,6 @@ impl Downstream {
             last_call_to_update_hr: 0,
             last_notify: None,
             stats_sender,
-            connected_at: tokio::time::Instant::now(),
         }
     }
 }

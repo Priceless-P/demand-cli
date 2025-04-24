@@ -63,7 +63,6 @@ lazy_static! {
     } else {
         MAIN_AUTH_PUB_KEY
     };
-    static ref DELAY: Duration = Duration::from_secs(ARGS.delay);
 }
 #[derive(Parser)]
 struct Args {
@@ -76,7 +75,7 @@ struct Args {
     loglevel: String,
     #[clap(long = "nc", short = 'n', default_value = "off")]
     noise_connection_log: String,
-    #[clap(long = "delay", default_value = "5")]
+    #[clap(long = "delay", default_value = "0")]
     delay: u64,
 }
 
