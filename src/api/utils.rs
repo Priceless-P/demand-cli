@@ -24,7 +24,7 @@ pub(super) async fn get_cpu_and_memory_usage() -> (f32, u64) {
     if let Some(process) = system.process(Pid::from_u32(pid)) {
         let cpu_usage = process.cpu_usage();
         let cpu_nums = system.cpus().len() as f32; // get the number of cpu
-        
+
         let normalized_cpu_usage = if cpu_nums > 0.0 {
             cpu_usage / cpu_nums
         } else {
