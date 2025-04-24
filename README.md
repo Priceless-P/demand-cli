@@ -3,15 +3,17 @@
 [![Forks](https://img.shields.io/github/forks/demand-open-source/demand-cli?style=social)](https://github.com/demand-open-source/demand-cli)
 ![Release](https://img.shields.io/github/v/release/demand-open-source/demand-cli)
 
-**Demand CLI** is a proxy that let miners to connect to and mine with [Demand Pool](https://dmnd.work). It serves two primary purposes: 
+**Demand CLI** is a proxy that let miners to connect to and mine with [Demand Pool](https://dmnd.work). It serves three primary purposes: 
   1. Translation: Enables miners using StratumV1 to connect to the Demand Pool without requiring firmware updates. Sv1 messages gets translated to Sv2.
   2. Job Declaration (JD): Allows miners to declare custom jobs to the pool using StratumV2.
+  3. Solo Mining: Skip pool entirely and mine solo
 
 
 ## Features
 - **Stratum V2 Support**: Uses the secure and efficient Stratum V2 protocol for communication with the pool.
 - **Job Declaration**: Enables miners to propose custom block templates to the pool. This helps make mining more decentralized by allowing miners to pick the transactions they want to include in a block.
 - **Stratum V1 Translation**: Acts as a bridge, allowing StratumV1 miners to connect to the Demand Pool without firmware updates.
+- **Solo Mining Mode**: Allows miners to mine independently without a pool. 
 - **Flexible Configuration**: Provides options for customization. This allows users to optimize the tool for their specific mining environment.
 - **Monitoring API**: Provides HTTP endpoints to monitor proxy health, pool connectivity, miner performace, and system resource usage in real-time.
 
@@ -64,10 +66,20 @@ Before running the CLI, set up the necessary environment variables.
   ```
 Note: if `TP_ADDRESS` id not set, job declaration is disabled, and the proxy uses  templates provided by the pool.
 
+### Config File (for Solo Mining)
+Create config.toml with your coinbase outputs. Supported script types include P2PKH, P2SH, P2WPKH, P2WSH,  and P2TR
+Example config file:
+```toml
+ coinbase_outputs = [
+    { output_script_type = "P2WSH", output_script_value = "00142ef89234bc95136eb9e6fee9d32722ebd8c1f0ab" }
+]
+withhold = false
+```
+
 ## Running the CLI
 
 Depending on whether you built from source or downloaded a binary, the command to run the proxy is slightly different. There are also different options you can use. 
-Below are two example setups to get you started.
+Below are 3 example setups to get you started.
 
 #### Example 1: Built from Source with Job Declaration
 
@@ -75,7 +87,7 @@ This example assumes you’ve built `demand-cli` from source and want to enable 
 
    ```bash
    export TOKEN=abc123xyz
-   export TP_ADDRESS=192.168.1.100:8442
+   export TP_ADDRESS=127.0.0.1:8442
    ./target/release/demand-cli -d 100T --loglevel debug --nc on
   ```
 
@@ -92,6 +104,15 @@ Set Environment Variable:
 
 Point your Stratum V1 miners  to <your_proxy_ip>:32767.
 
+#### Example 3: Solo Mining (No Pool, No TOKEN)
+```bash
+ export TP_ADDRESS=127.0.0.1:8442
+./demand-cli-linux-x64 --solo -c path/to/config.toml --loglevel debug
+```
+This runs in solo mode, using your config.toml to define the coinbase output and other parameters. if `config.toml` is the directory as your binary `-c` is not required. Ensure Bitcoin node is running.
+
+Point your Stratum V1 miners  to <your_proxy_ip>:32767
+
 ### Options
 
   - **`--test`**: Connects to test endpoint
@@ -99,6 +120,8 @@ Point your Stratum V1 miners  to <your_proxy_ip>:32767.
     This helps the pool adjust to your hashrate.
   - **`--loglevel`**: Logging verbosity (`info`, `debug`, `error`, `warn`). Default is `info`.
   - **`--nc`**: Noise connection logging verbosity (`info`, `debug`, `error`, `warn`). Default is `off`.
+  - **`--solo`**: Enable solo mining mode. Requires `TP_ADDRESS` and a config file.
+  - **`-c, --config`**: Path to your solo mining config.toml. Default is config.toml
 
 
 ## Monitoring API:
@@ -153,6 +176,15 @@ Point your Stratum V1 miners  to <your_proxy_ip>:32767.
       "data": {
         "address": "<pool_address>",
         "latency": "5072"
+      }
+    }
+    ```
+  - **200 OK** (Solo mining):
+    ```json
+    {
+      "success": true,
+      "data": {
+        "pool": "Not connected to pool. Mining solo :)",
       }
     }
     ```
