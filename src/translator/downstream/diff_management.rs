@@ -7,6 +7,7 @@ use super::super::error::{Error, ProxyResult};
 use roles_logic_sv2::utils::Mutex;
 use std::ops::{Div, Mul};
 use std::sync::Arc;
+use std::time::Duration;
 use sv1_api::json_rpc;
 
 use bitcoin::util::uint::Uint256;
@@ -19,9 +20,20 @@ impl Downstream {
         let diff = self_.safe_lock(|d| d.difficulty_mgmt.current_difficulty)?;
 
         let (message, _) = diff_to_sv1_message(diff as f64)?;
-        Downstream::send_message_downstream(self_.clone(), message).await;
+        Downstream::send_message_downstream(self_.clone(), message.clone()).await;
 
-        tokio::time::sleep(std::time::Duration::from_secs(crate::ARGS.delay)).await;
+        let total_delay = Duration::from_secs(crate::ARGS.delay);
+        let repeat_interval = Duration::from_secs(30);
+        let mut elapsed = Duration::from_secs(0);
+
+        // Resend the same mining.set_difficulty message during delay to avoid miner connection timeout
+        while elapsed < total_delay {
+            let sleep_duration = repeat_interval.min(total_delay - elapsed);
+            tokio::time::sleep(sleep_duration).await;
+            elapsed += sleep_duration;
+
+            Downstream::send_message_downstream(self_.clone(), message.clone()).await;
+        }
 
         tokio::spawn(crate::translator::utils::check_share_rate_limit());
 
