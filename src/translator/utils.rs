@@ -108,7 +108,7 @@ pub fn validate_share(
         .0;
     let version = (job_version & !mask) | (request_version & mask);
 
-    let mut hash = roles_logic_sv2::utils::get_target(
+    let hash = roles_logic_sv2::utils::get_target(
         request.nonce.0,
         version,
         request.time.0,
@@ -120,10 +120,13 @@ pub fn validate_share(
         job.bits.0,
     );
 
-    hash.reverse(); //conver to little-endian
+    let mut target = Downstream::difficulty_to_target(difficulty);
+    target.reverse();
+
+    println!("Hash: {:x?}", hex::encode(hash));
+    println!("Target: {:x?}", hex::encode(target));
 
     let hash: Target = hash.into();
-    let target = Downstream::difficulty_to_target(difficulty);
     let target: Target = target.into();
     hash <= target
 }
