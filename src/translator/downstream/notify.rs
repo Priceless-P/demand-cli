@@ -124,6 +124,8 @@ async fn start_update(
     connection_id: u32,
 ) -> Result<(), Error<'static>> {
     let handle = task::spawn(async move {
+        // Prevent difficulty adjustments until after crate::ARGS.delay elapses
+        tokio::time::sleep(std::time::Duration::from_secs(crate::ARGS.delay)).await;
         loop {
             let share_count = crate::translator::utils::get_share_count(connection_id);
             let sleep_duration = if share_count >= crate::SHARE_PER_MIN * 3.0

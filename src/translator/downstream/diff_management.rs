@@ -24,16 +24,20 @@ impl Downstream {
 
         let total_delay = Duration::from_secs(crate::ARGS.delay);
         let repeat_interval = Duration::from_secs(30);
-        let mut elapsed = Duration::from_secs(0);
 
-        // Resend the same mining.set_difficulty message during delay to avoid miner connection timeout
-        while elapsed < total_delay {
-            let sleep_duration = repeat_interval.min(total_delay - elapsed);
-            tokio::time::sleep(sleep_duration).await;
-            elapsed += sleep_duration;
+        let self_clone = self_.clone();
+        tokio::spawn(async move {
+            let mut elapsed = Duration::from_secs(0);
 
-            Downstream::send_message_downstream(self_.clone(), message.clone()).await;
-        }
+            // Resend the same mining.set_difficulty message during delay to avoid miner connection timeout
+            while elapsed < total_delay {
+                let sleep_duration = repeat_interval.min(total_delay - elapsed);
+                tokio::time::sleep(sleep_duration).await;
+                elapsed += sleep_duration;
+
+                Downstream::send_message_downstream(self_clone.clone(), message.clone()).await;
+            }
+        });
 
         tokio::spawn(crate::translator::utils::check_share_rate_limit());
 
