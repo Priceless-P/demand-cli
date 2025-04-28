@@ -7,9 +7,16 @@ use roles_logic_sv2::utils::Mutex;
 use std::sync::Arc;
 use sv1_api::json_rpc;
 use sv1_api::server_to_client;
+use sv1_api::utils::HexU32Be;
 use tokio::sync::broadcast;
 use tokio::task;
 use tracing::{error, warn};
+
+fn apply_mask(mask: Option<HexU32Be>, message: &mut server_to_client::Notify<'static>) {
+    if let Some(mask) = mask {
+        message.version = HexU32Be(message.version.0 & !mask.0);
+    }
+}
 
 pub async fn start_notify(
     task_manager: Arc<Mutex<TaskManager>>,
@@ -31,6 +38,9 @@ pub async fn start_notify(
             let timeout_timer = std::time::Instant::now();
             let mut first_sent = false;
             loop {
+                let mask = downstream
+                    .safe_lock(|d| d.version_rolling_mask.clone())
+                    .unwrap();
                 let is_a = match downstream.safe_lock(|d| !d.authorized_names.is_empty()) {
                     Ok(is_a) => is_a,
                     Err(e) => {
@@ -44,7 +54,7 @@ pub async fn start_notify(
                         error!("Failed to initailize difficulty managemant {e}")
                     };
 
-                    let sv1_mining_notify_msg = match last_notify.clone() {
+                    let mut sv1_mining_notify_msg = match last_notify.clone() {
                         Some(sv1_mining_notify_msg) => sv1_mining_notify_msg,
                         None => {
                             error!("sv1_mining_notify_msg is None");
@@ -54,6 +64,7 @@ pub async fn start_notify(
                             break;
                         }
                     };
+                    apply_mask(mask, &mut sv1_mining_notify_msg);
                     let message: json_rpc::Message = sv1_mining_notify_msg.into();
                     Downstream::send_message_downstream(downstream.clone(), message).await;
                     if downstream
@@ -76,7 +87,7 @@ pub async fn start_notify(
                         break;
                     };
 
-                    while let Ok(sv1_mining_notify_msg) = rx_sv1_notify.recv().await {
+                    while let Ok(mut sv1_mining_notify_msg) = rx_sv1_notify.recv().await {
                         if downstream
                             .safe_lock(|d| d.last_notify = Some(sv1_mining_notify_msg.clone()))
                             .is_err()
@@ -88,6 +99,7 @@ pub async fn start_notify(
                             break;
                         }
 
+                        apply_mask(mask.clone(), &mut sv1_mining_notify_msg);
                         let message: json_rpc::Message = sv1_mining_notify_msg.into();
                         Downstream::send_message_downstream(downstream.clone(), message).await;
                     }

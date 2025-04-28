@@ -92,7 +92,7 @@ pub struct Downstream {
     //extranonce1: Vec<u8>,
     //extranonce2_size: usize,
     /// Version rolling mask bits
-    version_rolling_mask: Option<HexU32Be>,
+    pub(super) version_rolling_mask: Option<HexU32Be>,
     /// Minimum version rolling mask bits size
     version_rolling_min_bit: Option<HexU32Be>,
     /// Sends a SV1 `mining.submit` message received from the Downstream role to the `Bridge` for
