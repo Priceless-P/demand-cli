@@ -1,7 +1,7 @@
 pub mod message_handler;
 mod task_manager;
 use binary_sv2::{Seq0255, Seq064K, B016M, B064K, U256};
-use bitcoin::{util::psbt::serialize::Deserialize, Transaction};
+use bitcoin::{blockdata::transaction::Transaction, hashes::Hash};
 use codec_sv2::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
 use demand_sv2_connection::noise_connection_tokio::Connection;
 use roles_logic_sv2::{
@@ -241,9 +241,11 @@ impl JobDeclarator {
         let mut tx_list: Vec<Transaction> = Vec::new();
         let mut tx_ids = vec![];
         for tx in tx_list_.to_vec() {
-            match Transaction::deserialize(&tx) {
+            let transaction: Result<Transaction, bitcoin::consensus::encode::Error> =
+                bitcoin::consensus::deserialize(&tx);
+            match transaction {
                 Ok(tx) => {
-                    let id: U256 = tx.txid().to_vec().try_into().unwrap();
+                    let id: U256 = tx.compute_txid().to_raw_hash().to_byte_array().into();
                     tx_list.push(tx);
                     tx_ids.push(id);
                 }

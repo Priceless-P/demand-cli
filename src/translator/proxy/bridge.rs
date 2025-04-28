@@ -578,8 +578,6 @@ mod test {
     use super::*;
     use tokio::sync::mpsc;
 
-    use bitcoin::util::psbt::serialize::Serialize;
-
     pub mod test_utils {
         use super::*;
 
@@ -633,22 +631,22 @@ mod test {
                 ])
                 .unwrap();
                 let p_out = bitcoin::OutPoint {
-                    txid: bitcoin::Txid::from_hash(out_id),
+                    txid: bitcoin::Txid::from_raw_hash(out_id),
                     vout: 0xffff_ffff,
                 };
                 let in_ = bitcoin::TxIn {
                     previous_output: p_out,
                     script_sig: vec![89_u8; 16].into(),
                     sequence: bitcoin::Sequence(0),
-                    witness: Witness::from_vec(vec![]).into(),
+                    witness: Witness::new(),
                 };
                 let tx = bitcoin::Transaction {
-                    version: 1,
-                    lock_time: bitcoin::PackedLockTime(0),
+                    version: bitcoin::transaction::Version(1),
+                    lock_time: bitcoin::locktime::absolute::LockTime::from_time(0).unwrap(),
                     input: vec![in_],
                     output: vec![],
                 };
-                let tx = tx.serialize();
+                let tx = bitcoin::consensus::serialize(&tx);
                 let _down = bridge
                     .channel_factory
                     .add_standard_channel(0, 10_000_000_000.0, true, 1)

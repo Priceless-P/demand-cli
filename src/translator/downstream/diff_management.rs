@@ -1,16 +1,16 @@
 use super::{Downstream, DownstreamMessages, SetDownstreamTarget};
 use pid::Pid;
-use roles_logic_sv2::{self, utils::from_u128_to_uint256};
+use roles_logic_sv2::{self, utils::from_u128_to_u256};
 use sv1_api::{self, methods::server_to_client::SetDifficulty, server_to_client::Notify};
 
 use super::super::error::{Error, ProxyResult};
+use primitive_types::U256;
 use roles_logic_sv2::utils::Mutex;
 use std::ops::{Div, Mul};
 use std::sync::Arc;
 use std::time::Duration;
 use sv1_api::json_rpc;
 
-use bitcoin::util::uint::Uint256;
 use tracing::{error, info};
 
 impl Downstream {
@@ -133,7 +133,7 @@ impl Downstream {
             0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
             255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
         ];
-        let pdiff = Uint256::from_be_bytes(pdiff);
+        let pdiff = U256::from_big_endian(&pdiff);
         let scale: u128 = 1_000_000;
 
         // To handle the floating-point diff and `pdiff`, we scale it by 10^6 (1_000_000) to convert it to an integer
@@ -146,13 +146,12 @@ impl Downstream {
         }
         let diff: u128 = scaled_difficulty as u128;
 
-        let diff = from_u128_to_uint256(diff);
-        let scale = from_u128_to_uint256(scale);
+        let diff = from_u128_to_u256(diff);
+        let scale = from_u128_to_u256(scale);
 
         let target = pdiff.mul(scale).div(diff);
-        let mut target = target.to_be_bytes();
+        let target: [u8; 32] = target.to_big_endian();
 
-        target.reverse(); // Convert to little-endian for SV1
         target
     }
 
