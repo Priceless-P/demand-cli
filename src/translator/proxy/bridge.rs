@@ -8,10 +8,7 @@ use roles_logic_sv2::{
     parsers::Mining,
     utils::{GroupId, Mutex},
 };
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 use sv1_api::{client_to_server::Submit, server_to_client, utils::HexU32Be};
 use tokio::sync::broadcast;
 
@@ -26,13 +23,9 @@ use crate::{
     proxy_state::{ProxyState, TranslatorState, UpstreamType},
     shared::utils::AbortOnDrop,
 };
-use lazy_static::lazy_static;
 use roles_logic_sv2::{channel_logic::channel_factory::OnNewShare, Error as RolesLogicError};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-lazy_static! {
-    static ref SUBMIT_FAIL_COUNTER: AtomicU32 = AtomicU32::new(0);
-}
 /// Bridge between the SV2 `Upstream` and SV1 `Downstream` responsible for the following messaging
 /// translation:
 /// 1. SV1 `mining.submit` -> SV2 `SubmitSharesExtended`
@@ -240,6 +233,7 @@ impl Bridge {
             .map_err(|_| Error::BridgeMutexPoisoned)?;
         Ok(())
     }
+
     /// receives a `SubmitShareWithChannelId` and validates the shares and sends to `Upstream` if
     /// the share meets the upstream target
     async fn handle_submit_shares(
@@ -260,41 +254,29 @@ impl Bridge {
         let res = self_
             .safe_lock(|s| {
                 s.channel_factory.set_target(&mut upstream_target);
-                 match s.translate_submit(
+                let sv2_submit = match s.translate_submit(
                     share.channel_id,
                     share.share,
                     share.version_rolling_mask,
                 ) {
-                    Ok(submit_shares_extended) => {
-                        SUBMIT_FAIL_COUNTER.store(0, Ordering::Relaxed); // Reset on success
-                        let on_new_share = s.channel_factory.on_submit_shares_extended(submit_shares_extended);
-                    Ok(Some(on_new_share))},
+                    Ok(submit_shares_extended) => submit_shares_extended,
                     Err(e) => {
-                        // Increment counter and get the new count
-                        let count = SUBMIT_FAIL_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-                        if count >= 10 {
-                            error!("Failed to translate SV1 mining.submit message to SV2 SubmitSharesExtended message after 10 attempts");
-                            Err(e)
-                        } else {
-                            warn!(
-                                "Failed to translate SV1 mining.submit message to SV2 SubmitSharesExtended message, attempt {}",
-                                count
-                            );
-                           Ok(None)
-                        }
+                        error!("Failed to Translates SV1 mining.submit message to SV2 SubmitSharesExtended message");
+                        return Err(e); // Error will be handled by the caller
                     }
-                }
+                };
+                Ok(s.channel_factory.on_submit_shares_extended(sv2_submit))
             })
             .map_err(|_| Error::BridgeMutexPoisoned)?;
 
         match res {
-            Ok(Some(Ok(OnNewShare::SendErrorDownstream(e)))) => {
+            Ok(Ok(OnNewShare::SendErrorDownstream(e))) => {
                 let error_code = std::str::from_utf8(&e.error_code.to_vec()[..])
                     .unwrap_or("unparsable error code")
                     .to_string();
                 error!("Submit share error {}", error_code);
             }
-            Ok(Some(Ok(OnNewShare::SendSubmitShareUpstream((share, _))))) => {
+            Ok(Ok(OnNewShare::SendSubmitShareUpstream((share, _)))) => {
                 info!("SHARE MEETS UPSTREAM TARGET channel id: {}", channel_id);
                 match share {
                     Share::Extended(share) => {
@@ -308,19 +290,15 @@ impl Bridge {
                 }
             }
             // We are in an extended channel this variant is group channle only
-            Ok(Some(Ok(OnNewShare::RelaySubmitShareUpstream))) => unreachable!(),
-            Ok(Some(Ok(OnNewShare::ShareMeetDownstreamTarget))) => {
+            Ok(Ok(OnNewShare::RelaySubmitShareUpstream)) => unreachable!(),
+            Ok(Ok(OnNewShare::ShareMeetDownstreamTarget)) => {
                 info!("SHARE MEETS DOWNSTREAM TARGET channel id {}", channel_id);
             }
             // Proxy do not have JD capabilities
-            Ok(Some(Ok(OnNewShare::ShareMeetBitcoinTarget(..)))) => unreachable!(),
-            Ok(Some(Err(e))) => {
+            Ok(Ok(OnNewShare::ShareMeetBitcoinTarget(..))) => unreachable!(),
+            Ok(Err(e)) => {
                 error!("{}", e);
                 return Err(Error::RolesSv2Logic(e));
-            }
-            Ok(None) => {
-                // Translation failed with count < 10; warning already logged
-                return Ok(());
             }
             Err(e) => {
                 error!("{}", e);
