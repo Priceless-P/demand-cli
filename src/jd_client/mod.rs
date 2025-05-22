@@ -113,7 +113,7 @@ async fn initialize_jd(
 
     let auth_pub_k: Secp256k1PublicKey = crate::AUTH_PUB_KEY.parse().expect("Invalid public key");
     let addresses = Configuration::pool_address().expect("Pool address is missing");
-    let address = addresses.first().expect("Pool address is missing").clone();
+    let address = *addresses.first().expect("Pool address is missing");
 
     let (jd, jd_abortable) =
         match JobDeclarator::new(address, auth_pub_k.into_bytes(), upstream.clone(), true).await {

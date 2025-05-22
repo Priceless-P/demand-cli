@@ -592,6 +592,7 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
 
                         if still_mismatch {
                             error!("Stopping job declaration due to persistent prev_hash mismatch");
+                            // Set TP_ADDRESS to None and restart proxy to switch to non-jd mode
                             if crate::TP_ADDRESS.safe_lock(|tp| *tp = None).is_err() {
                                 error!("TP_ADDRESS mutex corrupt");
                             };
