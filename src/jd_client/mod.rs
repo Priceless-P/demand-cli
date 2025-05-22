@@ -40,15 +40,16 @@ pub static IS_NEW_TEMPLATE_HANDLED: AtomicBool = AtomicBool::new(true);
 
 pub static IS_CUSTOM_JOB_SET: AtomicBool = AtomicBool::new(true);
 
-use crate::proxy_state::{DownstreamType, ProxyState, TpState};
+use crate::{
+    config::Configuration,
+    proxy_state::{DownstreamType, ProxyState, TpState},
+};
 use roles_logic_sv2::{parsers::Mining, utils::Mutex};
 use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
     sync::Arc,
 };
-
-use std::net::ToSocketAddrs;
 
 use crate::shared::utils::AbortOnDrop;
 
@@ -111,13 +112,11 @@ async fn initialize_jd(
     let port_tp = parts.next().expect("The passed value for TP address is not valid. Terminating.... TP_ADDRESS should be in this format `127.0.0.1:8442`").parse::<u16>().expect("This operation should not fail because a valid port_tp should always be converted to U16");
 
     let auth_pub_k: Secp256k1PublicKey = crate::AUTH_PUB_KEY.parse().expect("Invalid public key");
-    let address = crate::POOL_ADDRESS
-        .to_socket_addrs()
-        .expect("The passed Pool Address is not valid")
-        .next()?;
+    let addresses = Configuration::pool_address().expect("Pool address is missing");
+    let address = addresses.first().expect("Pool address is missing");
 
     let (jd, jd_abortable) =
-        match JobDeclarator::new(address, auth_pub_k.into_bytes(), upstream.clone(), true).await {
+        match JobDeclarator::new(*address, auth_pub_k.into_bytes(), upstream.clone(), true).await {
             Ok(c) => c,
             Err(e) => {
                 error!("Failed to intialize Jd: {e}");

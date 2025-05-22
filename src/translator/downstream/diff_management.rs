@@ -29,7 +29,7 @@ impl Downstream {
         let (message, _) = diff_to_sv1_message(diff as f64)?;
         Downstream::send_message_downstream(self_.clone(), message.clone()).await;
 
-        let total_delay = Duration::from_secs(crate::ARGS.delay);
+        let total_delay = Duration::from_secs(crate::Configuration::delay());
         let repeat_interval = Duration::from_secs(30);
 
         let self_clone = self_.clone();

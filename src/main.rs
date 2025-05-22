@@ -1,4 +1,3 @@
-use clap::Parser;
 #[cfg(not(target_os = "windows"))]
 use jemallocator::Jemalloc;
 use router::Router;
@@ -8,13 +7,15 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 static GLOBAL: Jemalloc = Jemalloc;
 
 use crate::shared::utils::AbortOnDrop;
+use config::Configuration;
 use key_utils::Secp256k1PublicKey;
 use lazy_static::lazy_static;
 use proxy_state::{PoolState, ProxyState, TpState, TranslatorState};
-use std::{net::ToSocketAddrs, time::Duration};
+use std::time::Duration;
 use tokio::sync::mpsc::channel;
 use tracing::{error, info, warn};
 mod api;
+mod config;
 mod ingress;
 pub mod jd_client;
 mod minin_pool_connection;
@@ -32,79 +33,34 @@ const DEFAULT_SV1_HASHPOWER: f32 = 100_000_000_000_000.0;
 const SHARE_PER_MIN: f32 = 10.0;
 const CHANNEL_DIFF_UPDTATE_INTERVAL: u32 = 10;
 const MAX_LEN_DOWN_MSG: u32 = 10000;
-const MAIN_POOL_ADDRESS: &str = "mining.dmnd.work:2000";
-//const TEST_POOL_ADDRESS: &str = "127.0.0.1:20000";
-const TEST_POOL_ADDRESS: &str = "18.193.252.132:2000";
 const MAIN_AUTH_PUB_KEY: &str = "9bQHWXsQ2J9TRFTaxRh3KjoxdyLRfWVEy25YHtKF8y8gotLoCZZ";
 const TEST_AUTH_PUB_KEY: &str = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
-//const TP_ADDRESS: &str = "127.0.0.1:8442";
 const DEFAULT_LISTEN_ADDRESS: &str = "0.0.0.0:32767";
 
 lazy_static! {
     static ref SV1_DOWN_LISTEN_ADDR: String =
-        std::env::var("SV1_DOWN_LISTEN_ADDR").unwrap_or(DEFAULT_LISTEN_ADDRESS.to_string());
+        Configuration::downstream_listening_addr().unwrap_or(DEFAULT_LISTEN_ADDRESS.to_string());
     static ref TP_ADDRESS: roles_logic_sv2::utils::Mutex<Option<String>> =
-        roles_logic_sv2::utils::Mutex::new(std::env::var("TP_ADDRESS").ok());
-    static ref EXPECTED_SV1_HASHPOWER: f32 = Args::parse()
-        .downstream_hashrate
-        .unwrap_or(DEFAULT_SV1_HASHPOWER);
+        roles_logic_sv2::utils::Mutex::new(Configuration::tp_address());
+    static ref EXPECTED_SV1_HASHPOWER: f32 =
+        Configuration::downstream_hashrate().unwrap_or(DEFAULT_SV1_HASHPOWER);
 }
 
 lazy_static! {
-    static ref ARGS: Args = Args::parse();
-    pub static ref POOL_ADDRESS: &'static str = if ARGS.test {
-        TEST_POOL_ADDRESS
-    } else {
-        MAIN_POOL_ADDRESS
-    };
-    pub static ref AUTH_PUB_KEY: &'static str = if ARGS.test {
+    // pub static ref POOL_ADDRESS: &'static str = Configuration::pool_address();
+    pub static ref AUTH_PUB_KEY: &'static str = if Configuration::test() {
         TEST_AUTH_PUB_KEY
     } else {
         MAIN_AUTH_PUB_KEY
     };
 }
-#[derive(Parser)]
-struct Args {
-    // Use test enpoint if test flag is provided
-    #[clap(long)]
-    test: bool,
-    #[clap(long ="d", short ='d', value_parser = parse_hashrate)]
-    downstream_hashrate: Option<f32>,
-    #[clap(long = "loglevel", short = 'l', default_value = "info")]
-    loglevel: String,
-    #[clap(long = "nc", short = 'n', default_value = "off")]
-    noise_connection_log: String,
-    #[clap(long = "delay", default_value = "0")]
-    delay: u64,
-    #[clap(long = "interval", short = 'i', default_value = "120000")]
-    adjustment_interval: u64,
-}
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let log_level = Configuration::loglevel();
 
-    let log_level = match args.loglevel.to_lowercase().as_str() {
-        "trace" | "debug" | "info" | "warn" | "error" => args.loglevel,
-        _ => {
-            error!(
-                "Invalid log level '{}'. Defaulting to 'info'.",
-                args.loglevel
-            );
-            "info".to_string()
-        }
-    };
-
-    let noise_connection_log_level = match args.noise_connection_log.as_str() {
-        "trace" | "debug" | "info" | "warn" | "error" => args.noise_connection_log,
-        _ => {
-            error!(
-                "Invalid log level for noise_connection '{}' Defaulting to 'off'.",
-                args.noise_connection_log
-            );
-            "off".to_string()
-        }
-    };
+    let noise_connection_log_level = Configuration::nc_loglevel();
+    let downstream_hashrate = Configuration::downstream_hashrate();
 
     //Disable noise_connection error (for now) because:
     // 1. It produce logs that are not very user friendly and also bloat the logs
@@ -116,11 +72,11 @@ async fn main() {
             log_level, noise_connection_log_level
         )))
         .init();
-    std::env::var("TOKEN").expect("Missing TOKEN environment variable");
+    Configuration::token().expect("TOKEN is not set");
 
     let hashpower = *EXPECTED_SV1_HASHPOWER;
 
-    if args.downstream_hashrate.is_some() {
+    if downstream_hashrate.is_some() {
         info!(
             "Using downstream hashrate: {}h/s",
             HashUnit::format_value(hashpower)
@@ -131,26 +87,25 @@ async fn main() {
             HashUnit::format_value(hashpower)
         );
     }
-    if args.test {
+    if Configuration::test() {
         info!("Connecting to test endpoint...");
     }
 
     let auth_pub_k: Secp256k1PublicKey = AUTH_PUB_KEY.parse().expect("Invalid public key");
-    let address = POOL_ADDRESS
-        .to_socket_addrs()
-        .expect("Invalid pool address")
-        .next()
-        .expect("Invalid pool address");
 
-    // We will add upstream addresses here
-    let pool_addresses = vec![address];
-
-    let mut router = router::Router::new(pool_addresses, auth_pub_k, None, None);
-    let epsilon = Duration::from_millis(10);
-    let best_upstream = router.select_pool_connect().await;
-    initialize_proxy(&mut router, best_upstream, epsilon).await;
-    info!("exiting");
-    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+    match Configuration::pool_address() {
+        Some(pool_addresses) => {
+            let mut router = router::Router::new(pool_addresses, auth_pub_k, None, None);
+            let epsilon = Duration::from_millis(10);
+            let best_upstream = router.select_pool_connect().await;
+            initialize_proxy(&mut router, best_upstream, epsilon).await;
+            info!("exiting");
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        }
+        None => {
+            panic!("Pool address is missing")
+        }
+    };
 }
 
 async fn initialize_proxy(
@@ -344,39 +299,6 @@ async fn monitor(
         should_check_upstreams_latency += 1;
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-}
-
-/// Parses a hashrate string (e.g., "10T", "2.5P", "500E") into an f32 value in h/s.
-fn parse_hashrate(hashrate_str: &str) -> Result<f32, String> {
-    let hashrate_str = hashrate_str.trim();
-    if hashrate_str.is_empty() {
-        return Err("Hashrate cannot be empty. Expected format: '<number><unit>' (e.g., '10T', '2.5P', '5E'".to_string());
-    }
-
-    let unit = hashrate_str.chars().last().unwrap_or(' ').to_string();
-    let num = &hashrate_str[..hashrate_str.len().saturating_sub(1)];
-
-    let num: f32 = num.parse().map_err(|_| {
-        format!(
-            "Invalid number '{}'. Expected format: '<number><unit>' (e.g., '10T', '2.5P', '5E')",
-            num
-        )
-    })?;
-
-    let multiplier = HashUnit::from_str(&unit)
-        .map(|unit| unit.multiplier())
-        .ok_or_else(|| format!(
-            "Invalid unit '{}'. Expected 'T' (Terahash), 'P' (Petahash), or 'E' (Exahash). Example: '10T', '2.5P', '5E'",
-            unit
-        ))?;
-
-    let hashrate = num * multiplier;
-
-    if hashrate.is_infinite() || hashrate.is_nan() {
-        return Err("Hashrate too large or invalid".to_string());
-    }
-
-    Ok(hashrate)
 }
 
 pub enum Reconnect {
