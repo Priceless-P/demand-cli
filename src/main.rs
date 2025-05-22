@@ -5,7 +5,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[cfg(not(target_os = "windows"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
-
+mod config;
 use crate::shared::utils::AbortOnDrop;
 use config::Configuration;
 use key_utils::Secp256k1PublicKey;
@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::channel;
 use tracing::{error, info, warn};
 mod api;
-mod config;
+
 mod ingress;
 pub mod jd_client;
 mod minin_pool_connection;
@@ -60,7 +60,6 @@ async fn main() {
     let log_level = Configuration::loglevel();
 
     let noise_connection_log_level = Configuration::nc_loglevel();
-    let downstream_hashrate = Configuration::downstream_hashrate();
 
     //Disable noise_connection error (for now) because:
     // 1. It produce logs that are not very user friendly and also bloat the logs
@@ -74,19 +73,6 @@ async fn main() {
         .init();
     Configuration::token().expect("TOKEN is not set");
 
-    let hashpower = *EXPECTED_SV1_HASHPOWER;
-
-    if downstream_hashrate.is_some() {
-        info!(
-            "Using downstream hashrate: {}h/s",
-            HashUnit::format_value(hashpower)
-        );
-    } else {
-        warn!(
-            "No downstream hashrate provided, using default value: {}h/s",
-            HashUnit::format_value(hashpower)
-        );
-    }
     if Configuration::test() {
         info!("Connecting to test endpoint...");
     }
@@ -103,7 +89,7 @@ async fn main() {
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
         }
         None => {
-            panic!("Pool address is missing")
+            panic!("Pool address is missing") // Panic for now, later we start solo mining here
         }
     };
 }

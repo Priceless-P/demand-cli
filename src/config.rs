@@ -5,9 +5,9 @@ use std::{
     net::{SocketAddr, ToSocketAddrs},
     path::PathBuf,
 };
-use tracing::error;
+use tracing::{error, info, warn};
 
-use crate::HashUnit;
+use crate::{HashUnit, EXPECTED_SV1_HASHPOWER};
 lazy_static! {
     pub static ref CONFIG: Configuration = Configuration::load_config();
 }
@@ -44,7 +44,7 @@ struct ConfigFile {
     pool_addresses: Option<Vec<String>>,
     interval: Option<u64>,
     delay: Option<u64>,
-    downstream_hashrate: Option<f32>,
+    downstream_hashrate: Option<String>,
     loglevel: Option<String>,
     nc_loglevel: Option<String>,
     test: Option<bool>,
@@ -180,7 +180,7 @@ impl Configuration {
             .adjustment_interval
             .or(config.interval)
             .or_else(|| std::env::var("INTERVAL").ok().and_then(|s| s.parse().ok()))
-            .unwrap_or(120000);
+            .unwrap_or(120_000);
 
         let delay = args
             .delay
@@ -190,12 +190,30 @@ impl Configuration {
 
         let downstream_hashrate = args
             .downstream_hashrate
-            .or(config.downstream_hashrate)
+            .or_else(|| {
+                config
+                    .downstream_hashrate
+                    .as_deref()
+                    .and_then(|d| parse_hashrate(d).ok())
+            })
             .or_else(|| {
                 std::env::var("DOWNSTREAM_HASHRATE")
                     .ok()
                     .and_then(|s| s.parse().ok())
             });
+        let hashpower = *EXPECTED_SV1_HASHPOWER;
+
+        if downstream_hashrate.is_some() {
+            info!(
+                "Using downstream hashrate: {}h/s",
+                HashUnit::format_value(hashpower)
+            );
+        } else {
+            warn!(
+                "No downstream hashrate provided, using default value: {}h/s",
+                HashUnit::format_value(hashpower)
+            );
+        }
 
         let listening_addr = args.listening_addr.or(config.listening_addr).or_else(|| {
             std::env::var("DOWNSTREAM_HASHRATE")
