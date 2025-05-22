@@ -565,7 +565,7 @@ impl ParseUpstreamMiningMessages<Downstream, NullDownstreamMiningSelector, NoRou
     ) -> Result<roles_logic_sv2::handlers::mining::SendTo<Downstream>, RolesLogicError> {
         if let Some(downstream) = &self.downstream {
             if let Ok(Some(jd)) = downstream.safe_lock(|d| d.jd.clone()) {
-                // Compare pool's prev_hash with TP's prev_hash
+                // Compare pool's prev_hash with JD's prev_hash
                 let is_mismatch = jd
                     .safe_lock(|jd| jd.last_set_new_prev_hash.clone())
                     .map(|tp| match tp {

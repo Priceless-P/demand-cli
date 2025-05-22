@@ -5,7 +5,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[cfg(not(target_os = "windows"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
-mod config;
+
 use crate::shared::utils::AbortOnDrop;
 use config::Configuration;
 use key_utils::Secp256k1PublicKey;
@@ -16,6 +16,7 @@ use tokio::sync::mpsc::channel;
 use tracing::{error, info, warn};
 mod api;
 
+mod config;
 mod ingress;
 pub mod jd_client;
 mod minin_pool_connection;

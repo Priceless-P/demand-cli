@@ -1,3 +1,4 @@
+use crate::config::Configuration;
 use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
 use rand::distributions::{Alphanumeric, DistString};
 use roles_logic_sv2::{
@@ -11,7 +12,6 @@ use std::{convert::TryInto, net::SocketAddr, sync::Arc};
 use tokio::sync::mpsc::{Receiver as TReceiver, Sender as TSender};
 use tracing::error;
 
-use crate::config::Configuration;
 pub type Message = PoolMessages<'static>;
 pub type StdFrame = StandardSv2Frame<Message>;
 pub type EitherFrame = StandardEitherFrame<Message>;
