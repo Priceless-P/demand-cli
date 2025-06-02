@@ -83,6 +83,7 @@ impl JobDeclarator {
         authority_public_key: [u8; 32],
         up: Arc<Mutex<Upstream>>,
         should_log_when_connected: bool,
+        use_random_device_id: bool,
     ) -> Result<(Arc<Mutex<Self>>, AbortOnDrop), Error> {
         let stream = tokio::net::TcpStream::connect(address).await?;
         let initiator = Initiator::from_raw_k(authority_public_key)?;
@@ -91,7 +92,8 @@ impl JobDeclarator {
                 .await
                 .map_err(|_| Error::Unrecoverable)?;
 
-        SetupConnectionHandler::setup(&mut receiver, &mut sender, address).await?;
+        SetupConnectionHandler::setup(&mut receiver, &mut sender, address, use_random_device_id)
+            .await?; // don't use random device_id
 
         if should_log_when_connected {
             info!("JD CONNECTED");

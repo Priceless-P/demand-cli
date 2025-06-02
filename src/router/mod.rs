@@ -395,7 +395,9 @@ impl PoolLatency {
                             }
                         };
                     if let Err(e) =
-                        SetupConnectionHandler::setup(&mut receiver, &mut sender, address).await
+                        SetupConnectionHandler::setup(&mut receiver, &mut sender, address, true)
+                            .await
+                    // use random device_id
                     {
                         error!("Failed to setup connection: {:?}", e);
                         return Err(());
@@ -418,6 +420,7 @@ impl PoolLatency {
                         authority_public_key.into_bytes(),
                         upstream,
                         false,
+                        true,
                     )
                     .await
                     {
@@ -484,6 +487,6 @@ async fn initialize_mining_connections(
             }
         };
     let setup_connection_msg =
-        setup_connection_msg.unwrap_or(get_mining_setup_connection_msg(true));
+        setup_connection_msg.unwrap_or(get_mining_setup_connection_msg(true, true)); // use random device_id
     Ok((receiver, sender, setup_connection_msg))
 }
