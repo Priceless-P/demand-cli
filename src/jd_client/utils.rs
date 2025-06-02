@@ -1,5 +1,7 @@
-use bitcoin::{Amount, TxOut};
-use roles_logic_sv2::{utils::CoinbaseOutput, Error};
+use std::str::FromStr;
+
+use super::error::Error;
+use bitcoin::{Address, Amount, Network, ScriptBuf, TxOut};
 use serde::Deserialize;
 use tracing::{error, info};
 
@@ -33,52 +35,60 @@ pub async fn retry_connection(address: String) {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct Output {
-    output_script_type: String,
-    output_script_value: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    coinbase_outputs: Vec<Output>,
+    payout_address: String,
     withhold: Option<bool>,
+    network: String,
 }
 impl Config {
     pub fn withhold(self) -> Option<bool> {
-        self.withhold
-    }
-}
-
-impl TryFrom<&Output> for CoinbaseOutput {
-    type Error = roles_logic_sv2::errors::Error;
-
-    fn try_from(pool_output: &Output) -> Result<Self, Self::Error> {
-        match pool_output.output_script_type.as_str() {
-            "TEST" | "P2PK" | "P2PKH" | "P2WPKH" | "P2SH" | "P2WSH" | "P2TR" => {
-                Ok(CoinbaseOutput {
-                    output_script_type: pool_output.clone().output_script_type,
-                    output_script_value: pool_output.clone().output_script_value,
-                })
-            }
-            _ => Err(roles_logic_sv2::Error::UnknownOutputScriptType),
-        }
+        crate::ARGS.withhold.or(self.withhold)
     }
 }
 
 pub fn get_coinbase_output(config: &Config) -> Result<Vec<TxOut>, Error> {
-    let mut result = Vec::new();
-    for coinbase_output_pool in &config.coinbase_outputs {
-        let coinbase_output: CoinbaseOutput = coinbase_output_pool.try_into()?;
-        let output_script = coinbase_output.try_into()?;
-        result.push(TxOut {
-            value: Amount::from_sat(0),
-            script_pubkey: output_script,
-        });
-    }
-    match result.is_empty() {
-        true => Err(Error::EmptyCoinbaseOutputs),
-        _ => Ok(result),
-    }
+    let network = match crate::ARGS
+        .network
+        .as_ref()
+        .unwrap_or(&config.network)
+        .to_lowercase()
+        .as_str()
+    {
+        "bitcoin" => Network::Bitcoin,
+        "testnet" => Network::Testnet,
+        "regtest" => Network::Regtest,
+        "signet" => Network::Signet,
+        _ => {
+            return Err(Error::InvalidNetwork(format!(
+                "Unknown network: {}",
+                config.network
+            )))
+        }
+    };
+
+    let payout_address = crate::ARGS
+        .payout_address
+        .as_ref()
+        .unwrap_or(&config.payout_address);
+
+    let addr =
+        Address::from_str(payout_address).map_err(|e| Error::InvalidAddress(e.to_string()))?;
+
+    let address = addr
+        .require_network(network)
+        .map_err(|e| Error::NetworkMismatch(e.to_string()))?;
+
+    // Get the script pubkey from the address
+    let script_pubkey: ScriptBuf = address.script_pubkey();
+
+    info!("Detected script type: {:?}", address.address_type());
+    println!("Script type: {:?}", script_pubkey);
+    let tx_out = TxOut {
+        value: Amount::from_sat(0),
+        script_pubkey,
+    };
+
+    Ok(vec![tx_out])
 }
 
 pub fn parse_tp_address() -> Option<(String, u16, String)> {

@@ -67,15 +67,19 @@ Before running the CLI, set up the necessary environment variables.
 Note: if `TP_ADDRESS` id not set, job declaration is disabled, and the proxy uses  templates provided by the pool.
 
 ### Config File (for Solo Mining)
-Create config.toml with your coinbase outputs. Supported script types include P2PKH, P2SH, P2WPKH, P2WSH,  and P2TR
-Example config file:
-```toml
- coinbase_outputs = [
-    { output_script_type = "P2WSH", output_script_value = "00142ef89234bc95136eb9e6fee9d32722ebd8c1f0ab" }
-]
-withhold = false
-```
+Create config.toml with payout address, network and withhold.
+  Example config file:
+  ```toml
+  payout_address = "bc1qn2ckg6c2329e3g7w8sqlwqrg7f0hgcrv2fp2hv"
+  withhold = false
+  network = "bitcoin"
+  ```
+  - payout_address: Bitcoin address for coinbase output (where your reward will be sent)
+  - withhold:  specifies whether or not to withhold mining rewards (default: false). 
+  - network <NETWORK>: Bitcoin network (bitcoin, testnet, regtest, signet; default: bitcoin)
 
+  These can also be passed as CLI args. Supported script types include P2PKH, P2SH, P2WPKH, P2WSH,  and P2TR
+  
 ## Running the CLI
 
 Depending on whether you built from source or downloaded a binary, the command to run the proxy is slightly different. There are also different options you can use. 
@@ -107,9 +111,9 @@ Point your Stratum V1 miners  to <your_proxy_ip>:32767.
 #### Example 3: Solo Mining (No Pool, No TOKEN)
 ```bash
  export TP_ADDRESS=127.0.0.1:8442
-./demand-cli-linux-x64 --solo -c path/to/config.toml --loglevel debug
+./demand-cli-linux-x64 --solo --payout_address bc1qn2ckg6c2329e3g7w8sqlwqrg7f0hgcrv2fp2hv --network bitcoin
 ```
-This runs in solo mode, using your config.toml to define the coinbase output and other parameters. if `config.toml` is the directory as your binary `-c` is not required. Ensure Bitcoin node is running.
+This runs in solo mode, you can specify the payout_address and network in `toml` file  as pass its path with `-c path/to/config.toml`. if `config.toml` is the directory as your binary `-c` is not required. Ensure Bitcoin node is running.
 
 Point your Stratum V1 miners  to <your_proxy_ip>:32767
 
@@ -126,9 +130,9 @@ Point your Stratum V1 miners  to <your_proxy_ip>:32767
 
 ## Monitoring API:
 
-  The proxy exposes REST API enspoints to monitor its health, pool connectivity, connected mining devices performance and system resource usage. All endpoints are served on `http://0.0.0.0:3001` and return JSON responses in the format:
+  The proxy exposes REST API enspoints to monitor its health, pool connectivity, connected mining devices performance and system resource usage. All endpoints are served on `http://0.0.0.0:3001` by default and return JSON responses in the format:
 
-  ```json
+  ```
   {
     "success": boolean,
     "message": string | null,

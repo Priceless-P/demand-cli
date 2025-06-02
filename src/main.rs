@@ -79,6 +79,12 @@ struct Args {
     solo: bool,
     #[arg(short = 'c', long, default_value = "config.toml")]
     config: std::path::PathBuf,
+    #[clap(long)]
+    payout_address: Option<String>,
+    #[clap(long)]
+    withhold: Option<bool>,
+    #[clap(long, help = "Bitcoin network (bitcoin, testnet, regtest, signet)")]
+    network: Option<String>,
 }
 
 #[tokio::main]
