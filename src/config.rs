@@ -1,10 +1,12 @@
 use clap::Parser;
 use lazy_static::lazy_static;
 use rand::distributions::{Alphanumeric, DistString};
+use roles_logic_sv2::utils::{Id, Mutex};
 use serde::{Deserialize, Serialize};
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     path::PathBuf,
+    sync::Arc,
 };
 use tracing::{debug, error, info, warn};
 
@@ -75,6 +77,7 @@ pub struct Configuration {
     listening_addr: Option<String>,
     api_server_port: String,
     device_id: Option<String>,
+    id: Arc<Mutex<Id>>, // Global request ID generator, thread-safe
 }
 impl Configuration {
     pub fn token() -> Option<String> {
@@ -152,6 +155,15 @@ impl Configuration {
             device_id
         } else {
             panic!("No device ID provided. Set via config file, env var (DEVICE_ID), or CLI (--device-id)");
+        }
+    }
+
+    pub fn get_id() -> u32 {
+        if let Ok(id) = CONFIG.id.safe_lock(|id| id.next()) {
+            id
+        } else {
+            error!("Request ID mutex corrupt");
+            0
         }
     }
 
@@ -324,6 +336,7 @@ impl Configuration {
             listening_addr,
             api_server_port,
             device_id,
+            id: Arc::new(Mutex::new(Id::new())),
         }
     }
 }

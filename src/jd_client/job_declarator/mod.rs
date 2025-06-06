@@ -519,8 +519,9 @@ impl JobDeclarator {
 
     async fn allocate_tokens(self_mutex: &Arc<Mutex<Self>>, token_to_allocate: u32) {
         for i in 0..token_to_allocate {
+            let device_id = crate::Configuration::device_id(false);
             let message = JobDeclaration::AllocateMiningJobToken(AllocateMiningJobToken {
-                user_identifier: "todo".to_string().try_into().expect("Infallible operation"),
+                user_identifier: device_id.try_into().expect("Infallible operation"),
                 request_id: i,
             });
             let sender = match self_mutex.safe_lock(|s| s.sender.clone()) {
