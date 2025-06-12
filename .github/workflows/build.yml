@@ -95,47 +95,43 @@ jobs:
         run: cargo install cargo-release
 
       - name: Create a new tag based on Cargo.toml version
+        id: tag_creation
         run: |
           VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r .packages[0].version)
-          
-          # Check if the tag already exists remotely
           if git ls-remote --tags origin | grep -q "refs/tags/v$VERSION"; then
-            echo "Tag v$VERSION already exists"
-            if curl --silent --header "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | grep -q '"id"'; then
-              echo "Release for tag $TAG already exists. Aborting to prevent overwrite."
-              exit 1
-            else
-              echo "Tag $TAG exists but no release found. Proceeding to create release."
-            fi
+            echo "Tag v$VERSION already exists, skipping tag creation."
+            echo "::set-output name=tag_created::false"
           else
-            echo "Tag $TAG does not exist. Creating new tag."
             git tag "v$VERSION"
             git push origin "v$VERSION"
+            echo "::set-output name=tag_created::true"
           fi
-          
           echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
 
 
       - name: Download Linux Artifact
+        if: steps.tag_creation.outputs.tag_created == 'true'
         uses: actions/download-artifact@v4
         with:
           name: linux-artifact
           path: .
 
       - name: Download macOS Artifact
+        if: steps.tag_creation.outputs.tag_created == 'true'
         uses: actions/download-artifact@v4
         with:
           name: macos-artifact
           path: .
 
       - name: Download Windows Artifact
+        if: steps.tag_creation.outputs.tag_created == 'true'
         uses: actions/download-artifact@v4
         with:
           name: windows-artifact
           path: .
 
       - name: Create GitHub Release and Upload Binaries
+        if: steps.tag_creation.outputs.tag_created == 'true'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.TAG_NAME }}
