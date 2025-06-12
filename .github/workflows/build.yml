@@ -85,6 +85,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -98,8 +100,16 @@ jobs:
           
           # Check if the tag already exists remotely
           if git ls-remote --tags origin | grep -q "refs/tags/v$VERSION"; then
-            echo "Tag v$VERSION already exists, skipping tag creation."
+            echo "Tag v$VERSION already exists"
+            if curl --silent --header "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | grep -q '"id"'; then
+              echo "Release for tag $TAG already exists. Aborting to prevent overwrite."
+              exit 1
+            else
+              echo "Tag $TAG exists but no release found. Proceeding to create release."
+            fi
           else
+            echo "Tag $TAG does not exist. Creating new tag."
             git tag "v$VERSION"
             git push origin "v$VERSION"
           fi
