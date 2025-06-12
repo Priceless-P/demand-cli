@@ -92,19 +92,28 @@ jobs:
       - name: Install cargo-release
         run: cargo install cargo-release
 
-      - name: Create a new tag based on Cargo.toml version
+      - name: Check if tag exists
+        id: check_tag
         run: |
           VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r .packages[0].version)
-          
-          # Check if the tag already exists remotely
           if git ls-remote --tags origin | grep -q "refs/tags/v$VERSION"; then
-            echo "Tag v$VERSION already exists, skipping tag creation."
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
           else
-            git tag "v$VERSION"
-            git push origin "v$VERSION"
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+            echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
           fi
-          
-          echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
+
+      - name: Fail if tag exists
+        if: steps.check_tag.outputs.tag_exists == 'true'
+        run: |
+          echo "Release tag already exists, aborting workflow to prevent overwriting."
+          exit 1
+
+      - name: Create and push tag
+        if: steps.check_tag.outputs.tag_exists == 'false'
+        run: |
+          git tag "${{ env.TAG_NAME }}"
+          git push origin "${{ env.TAG_NAME }}"
 
 
       - name: Download Linux Artifact
