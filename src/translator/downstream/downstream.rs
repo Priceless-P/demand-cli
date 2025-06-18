@@ -398,6 +398,13 @@ impl IsServer<'static> for Downstream {
             Some(false),
         )
     }
+    fn handle_set_difficulty(
+        &mut self,
+        value: f64,
+    ) -> Result<sv1_api::Message, sv1_api::error::Error<'static>> {
+        let set_difficulty = server_to_client::SetDifficulty { value };
+        Ok(set_difficulty.into())
+    }
 
     /// Handle the response to a `mining.subscribe` message received from the client.
     /// The subscription messages are erroneous and just used to conform the SV1 protocol spec.
