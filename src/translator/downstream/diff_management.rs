@@ -299,13 +299,31 @@ fn diff_to_sv1_message(diff: f64) -> ProxyResult<'static, (json_rpc::Message, [u
     Ok((message, target))
 }
 
+/// Takes a number (`f32`) and rounds it up to the next multiple of its current power of 10.
+/// For example, 15.0 becomes 20.0, and 1500.0 becomes 2000.0.
+///
+/// Returns 0.001 for non-positive inputs (`x <= 0.0`).
+/// For positive inputs, it:
+/// 1. Identifies the nearest power of 10 (e.g., 10, 100, 1000).
+/// 2. Divides the input by this power of 10.
+/// 3. Rounds up to the next integer.
+/// 4. Multiplies by the power of 10 to get the result.
+///
+///
+/// # Arguments
+///
+/// * `x` - A 32-bit floating-point number (`f32`).
+///
+/// # Returns
+///
+/// * `f32` - The nearest power of 10 greater than or equal to `x`, or `0.001` if `x <= 0.0`.
 pub fn nearest_power_of_10(x: f32) -> f32 {
     if x <= 0.0 {
         return 0.001;
     }
     let log = x.log10();
-    let base = 10f32.powi(log.floor() as i32); // Current power of 10
-    let scaled = (x / base).ceil(); // Round up to next multiple
+    let base = 10f32.powi(log.floor() as i32);
+    let scaled = (x / base).ceil();
     scaled * base
 }
 
@@ -325,6 +343,10 @@ mod test {
         sync::Arc,
         time::{Duration, Instant},
     };
+    use sv1_api::{
+        server_to_client::Notify,
+        utils::{HexU32Be, MerkleNode, PrevHash},
+    };
     use tokio::sync::mpsc::channel;
 
     #[test]
@@ -332,6 +354,7 @@ mod test {
         assert_eq!(nearest_power_of_10(450.0), 500.0);
         assert_eq!(nearest_power_of_10(0.034), 0.04);
         assert_eq!(nearest_power_of_10(0.0), 0.001);
+        assert_eq!(nearest_power_of_10(147.0), 200.0);
     }
 
     #[test]
@@ -451,6 +474,18 @@ mod test {
         };
         let (tx_sv1_submit, _rx_sv1_submit) = tokio::sync::mpsc::channel(10);
         let (tx_outgoing, _rx_outgoing) = channel(10);
+        let random_str = rand::thread_rng().gen::<[u8; 32]>().to_vec();
+        let first_job = Notify {
+            job_id: "ciao".to_string(),
+            prev_hash: PrevHash::try_from("0".repeat(64).as_str()).unwrap(),
+            coin_base1: "ffff".try_into().unwrap(),
+            coin_base2: "ffff".try_into().unwrap(),
+            merkle_branch: vec![MerkleNode::try_from(random_str).unwrap()],
+            version: HexU32Be(5667),
+            bits: HexU32Be(5678),
+            time: HexU32Be(5609),
+            clean_jobs: true,
+        };
         let mut downstream = Downstream::new(
             1,
             vec![],
@@ -459,11 +494,11 @@ mod test {
             None,
             tx_sv1_submit,
             tx_outgoing,
-            false,
             0,
             downstream_conf.clone(),
             Arc::new(Mutex::new(upstream_config)),
             crate::api::stats::StatsSender::new(),
+            first_job,
         );
         downstream.difficulty_mgmt.estimated_downstream_hash_rate = start_hashrate as f32;
 
