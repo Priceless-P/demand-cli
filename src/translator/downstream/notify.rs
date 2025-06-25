@@ -89,9 +89,7 @@ pub async fn start_notify(
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
-            if let Err(e) =
-                start_update(task_manager, downstream.clone(), connection_id).await
-            {
+            if let Err(e) = start_update(task_manager, downstream.clone(), connection_id).await {
                 warn!("Translator impossible to start update task: {e}");
             } else if authorized_in_time {
                 // Get the mask after initialization since is set by configure message
@@ -125,16 +123,13 @@ pub async fn start_notify(
                     Downstream::send_message_downstream(downstream.clone(), message).await;
                 }
             }
-            // TODO here we want to be sure that on drop this is called
-            let _ = Downstream::remove_downstream_hashrate_from_channel(&downstream);
-            // TODO here we want to kill the tasks
             warn!(
                 "Downstream: Shutting down sv1 downstream job notifier for {}",
                 &host
             );
         })
     };
-    TaskManager::add_notify(task_manager, handle.into())
+    TaskManager::add_notify(task_manager, handle.into(), connection_id)
         .await
         .map_err(|_| Error::TranslatorTaskManagerFailed)
 }
@@ -168,7 +163,7 @@ async fn start_update(
             };
         }
     });
-    TaskManager::add_update(task_manager, handle.into())
+    TaskManager::add_update(task_manager, handle.into(), connection_id)
         .await
         .map_err(|_| Error::TranslatorTaskManagerFailed)
 }

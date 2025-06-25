@@ -16,6 +16,7 @@ pub async fn start_receive_downstream(
     mut recv_from_down: mpsc::Receiver<String>,
     connection_id: u32,
 ) -> Result<(), Error<'static>> {
+    let task_manager_clone = task_manager.clone();
     let handle = task::spawn(async move {
         while let Some(incoming) = recv_from_down.recv().await {
             let incoming: Result<json_rpc::Message, _> = serde_json::from_str(&incoming);
@@ -53,8 +54,18 @@ pub async fn start_receive_downstream(
             "Downstream: Shutting down sv1 downstream reader {}",
             connection_id
         );
+
+        if let Err(e) = Downstream::remove_downstream_hashrate_from_channel(&downstream) {
+            error!("Failed to remove downstream hashrate from channel: {}", e)
+        };
+        if task_manager_clone
+            .safe_lock(|tm| tm.abort_tasks_for_connection_id(connection_id))
+            .is_err()
+        {
+            error!("TaskManager mutex poisoned")
+        };
     });
-    TaskManager::add_receive_downstream(task_manager, handle.into())
+    TaskManager::add_receive_downstream(task_manager, handle.into(), connection_id)
         .await
         .map_err(|_| Error::TranslatorTaskManagerFailed)
 }
