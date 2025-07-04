@@ -25,6 +25,7 @@ mod proxy_state;
 mod router;
 mod share_accounter;
 mod shared;
+mod shares_monitor;
 mod translator;
 
 const TRANSLATOR_BUFFER_SIZE: usize = 32;

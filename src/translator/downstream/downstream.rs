@@ -2,7 +2,11 @@ use crate::{
     api::stats::StatsSender,
     proxy_state::{DownstreamType, ProxyState},
     shared::utils::AbortOnDrop,
-    translator::{error::Error, utils::validate_share},
+    shares_monitor::SharesMonitor,
+    translator::{
+        error::Error,
+        utils::{allow_submit_share, validate_share},
+    },
 };
 
 use super::{
@@ -115,6 +119,7 @@ pub struct Downstream {
     pub(super) stats_sender: StatsSender,
     pub recent_jobs: RecentJobs,
     pub first_job: Notify<'static>,
+    pub share_monitor: SharesMonitor,
 }
 
 impl Downstream {
@@ -194,6 +199,7 @@ impl Downstream {
             stats_sender,
             recent_jobs: RecentJobs::new(),
             first_job: last_notify.expect("we have an assertion at the beginning of this function"),
+            share_monitor: SharesMonitor::new(),
         }));
 
         if let Err(e) = start_receive_downstream(
@@ -233,6 +239,27 @@ impl Downstream {
             error!("Failed to start notify task: {e}");
             ProxyState::update_downstream_state(DownstreamType::TranslatorDownstream);
         };
+        // Spawn a task to monitor shares
+        match downstream.clone().safe_lock(|s| s.share_monitor.clone()) {
+            Ok(share_monitor) => {
+                tokio::spawn(async move {
+                    info!("Starting share monitor for downstream {}", connection_id);
+                    tokio::select! {
+                        result = share_monitor.monitor() => {
+                            if let Err(e) = result {
+                                error!("Share monitor encountered an error: {:?}", e);
+                            } else {
+                                info!("Share monitor completed successfully for downstream {}", connection_id);
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                error!("Failed to lock share monitor: {:?}", e);
+                ProxyState::update_downstream_state(DownstreamType::TranslatorDownstream);
+            }
+        }
     }
 
     /// Accept connections from one or more SV1 Downstream roles (SV1 Mining Devices) and create a
@@ -368,6 +395,7 @@ impl Downstream {
             first_job,
             stats_sender,
             recent_jobs: RecentJobs::new(),
+            share_monitor: SharesMonitor::new(),
         }
     }
 }
@@ -448,59 +476,118 @@ impl IsServer<'static> for Downstream {
             self.stats_sender.update_rejected_shares(self.connection_id);
             return false;
         }
-        crate::translator::utils::update_share_count(self.connection_id); // update share count
-        if let Some(job) = self
-            .recent_jobs
-            .get_matching_job(job_id_as_number.expect("checked above"))
-        {
-            request.job_id = job.job_id.clone();
-            //check share is valid
-            if let Some(met_difficulty) = validate_share(
-                &request,
-                &job,
-                &self.difficulty_mgmt.current_difficulties,
-                self.extranonce1.clone(),
-                self.version_rolling_mask.clone(),
-            ) {
-                // Only forward upstream if the share meets the latest difficulty
-                if let Some(latest_difficulty) = self.difficulty_mgmt.current_difficulties.back() {
-                    if met_difficulty == *latest_difficulty {
-                        let to_send = SubmitShareWithChannelId {
-                            channel_id: self.connection_id,
-                            share: request.clone(),
-                            extranonce: self.extranonce1.clone(),
-                            extranonce2_len: self.extranonce2_len,
-                            version_rolling_mask: self.version_rolling_mask.clone(),
-                        };
-                        if let Err(e) = self
-                            .tx_sv1_bridge
-                            .try_send(DownstreamMessages::SubmitShares(to_send))
+        match allow_submit_share() {
+            Ok(true) => {
+                crate::translator::utils::update_share_count(self.connection_id); // update share count
+                if let Some(job) = self
+                    .recent_jobs
+                    .get_matching_job(job_id_as_number.expect("checked above"))
+                {
+                    request.job_id = job.job_id.clone();
+                    //check share is valid
+                    if let Some(met_difficulty) = validate_share(
+                        &request,
+                        &job,
+                        &self.difficulty_mgmt.current_difficulties,
+                        self.extranonce1.clone(),
+                        self.version_rolling_mask.clone(),
+                    ) {
+                        // Only forward upstream if the share meets the latest difficulty
+                        if let Some(latest_difficulty) =
+                            self.difficulty_mgmt.current_difficulties.back()
                         {
-                            error!("Failed to start receive downstream task: {e:?}");
-                            self.stats_sender.update_rejected_shares(self.connection_id);
-                            // Return false because submit was not properly handled
-                            return false;
+                            if met_difficulty == *latest_difficulty {
+                                let to_send = SubmitShareWithChannelId {
+                                    channel_id: self.connection_id,
+                                    share: request.clone(),
+                                    extranonce: self.extranonce1.clone(),
+                                    extranonce2_len: self.extranonce2_len,
+                                    version_rolling_mask: self.version_rolling_mask.clone(),
+                                };
+                                if let Err(e) = self
+                                    .tx_sv1_bridge
+                                    .try_send(DownstreamMessages::SubmitShares(to_send))
+                                {
+                                    error!("Failed to start receive downstream task: {e:?}");
+                                    self.stats_sender.update_rejected_shares(self.connection_id);
+                                    // Return false because submit was not properly handled
+                                    return false;
+                                }
+                            }
                         }
+
+                        let share_submission = crate::shares_monitor::SharesInfo::new(
+                            request.user_name.clone(),
+                            met_difficulty,
+                            request.job_id.parse::<u32>().expect("Invalid job_id") as i64,
+                            request.nonce.0 as i64,
+                            request.time.0 as i64,
+                        );
+
+                        self.share_monitor.insert_share(share_submission.clone());
+
+                        self.stats_sender.update_accepted_shares(self.connection_id);
+                        info!(
+                            "Share for Job {} and difficulty {} is accepted",
+                            request.job_id, met_difficulty
+                        );
+                        true
+                    } else {
+                        error!("Share rejected: Invalid share");
+                        self.stats_sender.update_rejected_shares(self.connection_id);
+                        false
                     }
+                } else {
+                    error!(
+                        "Share rejected: can not find job with id {}",
+                        request.job_id
+                    );
+                    self.stats_sender.update_rejected_shares(self.connection_id);
+                    false
                 }
-                self.stats_sender.update_accepted_shares(self.connection_id);
-                info!(
-                    "Share for Job {} and difficulty {} is accepted",
-                    request.job_id, met_difficulty
-                );
-                true
-            } else {
-                error!("Share rejected: Invalid share");
+            }
+            Ok(false) => {
+                warn!("Share will not be sent upstream: Exceeded 70 shares/min limit");
+                if let Some(job) = self
+                    .recent_jobs
+                    .get_matching_job(job_id_as_number.expect("checked above"))
+                {
+                    request.job_id = job.job_id.clone();
+                    //check share is valid
+                    if let Some(met_difficulty) = validate_share(
+                        &request,
+                        &job,
+                        &self.difficulty_mgmt.current_difficulties,
+                        self.extranonce1.clone(),
+                        self.version_rolling_mask.clone(),
+                    ) {
+                        info!(
+                            "Share for Job {} and difficulty {} is accepted",
+                            request.job_id, met_difficulty
+                        );
+                        // TODO here stats sender should update accepted shares that are not sent
+                        // upstream
+                        true
+                    } else {
+                        error!("Share rejected: Invalid share");
+                        self.stats_sender.update_rejected_shares(self.connection_id);
+                        false
+                    }
+                } else {
+                    error!(
+                        "Share rejected: can not find job with id {}",
+                        request.job_id
+                    );
+                    self.stats_sender.update_rejected_shares(self.connection_id);
+                    false
+                }
+            }
+            Err(e) => {
+                error!("Failed to record share: {e:?}");
                 self.stats_sender.update_rejected_shares(self.connection_id);
+                ProxyState::update_inconsistency(Some(1)); // restart proxy
                 false
             }
-        } else {
-            error!(
-                "Share rejected: can not find job with id {}",
-                request.job_id
-            );
-            self.stats_sender.update_rejected_shares(self.connection_id);
-            false
         }
     }
 
