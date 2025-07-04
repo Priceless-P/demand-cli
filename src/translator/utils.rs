@@ -255,6 +255,82 @@ pub fn get_share_count(connection_id: u32) -> f32 {
     share_counts
 }
 
+// Monitors shares submission and sends them to the API in batches when there are 20 or more shares.
+pub async fn monitor_share_submission() {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60)); // Check every 60 seconds
+    loop {
+        interval.tick().await;
+        let shares_to_send = crate::PENDING_SHARES
+            .safe_lock(|shares| {
+                // If we have 20 or more shares, send them
+                if shares.len() >= 20 {
+                    let shares_to_send = shares.clone();
+                    shares.clear(); // Clear the shares after taking them
+                    Some(shares_to_send)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|e| {
+                error!("Failed to lock PENDING_SHARES: {:?}", e);
+                ProxyState::update_downstream_state(DownstreamType::TranslatorDownstream);
+                None
+            });
+
+        if let Some(shares) = shares_to_send {
+            let length = shares.len();
+            debug!("Sending batch of {} shares to API", length);
+            match send_share_batch(shares.clone()).await {
+                Ok(_) => debug!("Successfully sent Shares: {:?} to API", &shares),
+                Err(e) => {
+                    error!("{}", Error::ApiError(e.to_string()));
+                }
+            };
+        }
+    }
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ShareSubmission {
+    pub worker_name: String,
+    pub difficulty: f32,
+    pub job_id: i64,
+    pub nonce: i32,
+    pub ntime: i32,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct Payload {
+    shares: Vec<ShareSubmission>,
+    token: String,
+}
+
+pub async fn send_share_batch(
+    shares: Vec<ShareSubmission>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let payload = Payload {
+        shares,
+        token: crate::config::Configuration::token().expect("Token is not set"),
+    };
+    let client = reqwest::Client::new();
+    let response = client
+        .post(crate::MONITORING_SERVER_URL)
+        .json(&payload)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("{} - {}", status, text),
+        )))
+    }
+}
+
 // /// currently the pool only supports 16 bytes exactly for its channels
 // /// to use but that may change
 // pub fn proxy_extranonce1_len(

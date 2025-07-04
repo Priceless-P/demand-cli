@@ -4,7 +4,7 @@ use crate::{
     shared::utils::AbortOnDrop,
     translator::{
         error::Error,
-        utils::{allow_submit_share, validate_share},
+        utils::{allow_submit_share, monitor_share_submission, validate_share},
     },
 };
 
@@ -236,6 +236,8 @@ impl Downstream {
             error!("Failed to start notify task: {e}");
             ProxyState::update_downstream_state(DownstreamType::TranslatorDownstream);
         };
+        // Spawn a task to monitor shares to send to monitoring server
+        tokio::spawn(monitor_share_submission());
     }
 
     /// Accept connections from one or more SV1 Downstream roles (SV1 Mining Devices) and create a
@@ -489,6 +491,22 @@ impl IsServer<'static> for Downstream {
                                 }
                             }
                         }
+
+                        let share_submission = crate::translator::utils::ShareSubmission {
+                            worker_name: request.user_name.clone(),
+                            difficulty: met_difficulty,
+                            job_id: request.job_id.parse::<u32>().expect("Invalid job_id") as i64,
+                            nonce: request.nonce.0 as i32,
+                            ntime: request.time.0 as i32,
+                        };
+
+                        if let Err(e) = crate::PENDING_SHARES.safe_lock(|shares| {
+                            shares.push(share_submission);
+                        }) {
+                            error!("Failed to push share submission: {e:?}");
+                            ProxyState::update_inconsistency(Some(1));
+                        }
+
                         self.stats_sender.update_accepted_shares(self.connection_id);
                         info!(
                             "Share for Job {} and difficulty {} is accepted",

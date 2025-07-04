@@ -28,6 +28,7 @@ pub enum Error<'a> {
     ImpossibleToOpenChannnel,
     #[allow(clippy::enum_variant_names)]
     AsyncChannelError,
+    ApiError(String),
 }
 
 impl From<Infallible> for Error<'_> {
@@ -59,6 +60,7 @@ impl fmt::Display for Error<'_> {
             Error::TranslatorTaskManagerFailed => write!(f, "TranslatorTaskManagerFailed"),
             Error::BridgeTaskManagerFailed => write!(f, "BridgeTaskManagerFailed"),
             Error::Unrecoverable => write!(f, "Unrecoverable"),
+            Error::ApiError(e) => write!(f, "ApiError: {}", e),
         }
     }
 }

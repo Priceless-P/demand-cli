@@ -1,5 +1,6 @@
 #[cfg(not(target_os = "windows"))]
 use jemallocator::Jemalloc;
+use roles_logic_sv2::utils::Mutex;
 use router::Router;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[cfg(not(target_os = "windows"))]
@@ -12,7 +13,7 @@ use key_utils::Secp256k1PublicKey;
 use lazy_static::lazy_static;
 use proxy_state::{PoolState, ProxyState, TpState, TranslatorState};
 use self_update::{backends, cargo_crate_version, update::UpdateStatus, TempDir};
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::mpsc::channel;
 use tracing::{debug, error, info, warn};
 mod api;
@@ -41,6 +42,7 @@ const DEFAULT_LISTEN_ADDRESS: &str = "0.0.0.0:32767";
 const REPO_OWNER: &str = "demand-open-source";
 const REPO_NAME: &str = "demand-cli";
 const BIN_NAME: &str = "demand-cli";
+const MONITORING_SERVER_URL: &str = "http://localhost:8787/api/share/save";
 
 lazy_static! {
     static ref SV1_DOWN_LISTEN_ADDR: String =
@@ -51,6 +53,7 @@ lazy_static! {
         roles_logic_sv2::utils::Mutex::new(None); // Connected pool address
     static ref EXPECTED_SV1_HASHPOWER: f32 = Configuration::downstream_hashrate();
     static ref API_SERVER_PORT: String = Configuration::api_server_port();
+    static ref PENDING_SHARES: Arc<Mutex<Vec<crate::translator::utils::ShareSubmission>>> = Arc::new(Mutex::new(Vec::new()));
 }
 
 lazy_static! {
