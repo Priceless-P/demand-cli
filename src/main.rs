@@ -137,6 +137,7 @@ async fn initialize_proxy(
             match router.connect_pool(pool_addr).await {
                 Ok(connection) => connection,
                 Err(_) => {
+                    ProxyState::update_pool_state(PoolState::Down);
                     error!("No upstream available. Retrying in 5 seconds...");
                     warn!(
                         "Please make sure the your token {} is correct",
@@ -314,6 +315,34 @@ async fn monitor(
             return Reconnect::NoUpstream;
         }
 
+        // Check if pool is down, if so fetch pool addresses, filter out the current pool address and return a new upstream to reconnect to
+        if ProxyState::is_pool_down() {
+            drop(abort_handles); // Drop all abort handles
+            server_handle.abort(); // abort server
+            info!("Pool is DOWN. Fetching new pool address...");
+            let pool_addresses = Configuration::pool_address() // this calls fetch_pool_urls internally
+                .await
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| {
+                    panic!("{} pool address is missing", Configuration::environment())
+                })
+                .into_iter()
+                .filter(|addr| Some(*addr) != router.current_pool)
+                .collect::<Vec<_>>();
+
+            router.update_pool_addresses(pool_addresses);
+
+            // Select pool with the least latency
+            match router.select_pool_connect().await {
+                Some(new_pool_addr) => {
+                    info!("Reconnecting to new pool: {}", new_pool_addr);
+                    return Reconnect::NewUpstream(new_pool_addr);
+                }
+                None => {
+                    return Reconnect::NoUpstream;
+                }
+            }
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 }

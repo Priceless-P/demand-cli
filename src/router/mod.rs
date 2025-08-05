@@ -60,6 +60,12 @@ impl Router {
         }
     }
 
+    /// Updates router's pool addresses.
+    pub fn update_pool_addresses(&mut self, pool_addresses: Vec<SocketAddr>) {
+        self.pool_addresses = pool_addresses;
+        info!("Updated pool addresses: {:?}", self.pool_addresses);
+    }
+
     /// Internal function to select pool with the least latency.
     async fn select_pool(&self) -> Option<(SocketAddr, Duration)> {
         let mut best_pool = None;

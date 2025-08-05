@@ -250,6 +250,15 @@ impl ProxyState {
         }
     }
 
+    pub fn is_pool_down() -> bool {
+        PROXY_STATE
+            .safe_lock(|state| state.pool == PoolState::Down)
+            .unwrap_or_else(|e| {
+                error!("Global Proxy Mutex Corrupted: {:?}", e);
+                false
+            })
+    }
+
     pub fn get_errors() -> Result<Vec<ProxyStates>, ()> {
         let mut errors = Vec::new();
         if PROXY_STATE
