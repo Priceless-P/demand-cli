@@ -96,6 +96,7 @@ pub struct ProxyState {
     pub inconsistency: Option<u32>,
     pub downstream: DownstreamState,
     pub upstream: UpstreamState,
+    pub pool_unreachable: bool,
 }
 
 impl ProxyState {
@@ -109,6 +110,7 @@ impl ProxyState {
             inconsistency: None,
             downstream: DownstreamState::Up,
             upstream: UpstreamState::Up,
+            pool_unreachable: false,
         }
     }
 
@@ -220,6 +222,18 @@ impl ProxyState {
         }
     }
 
+    pub fn pool_unreachable() {
+        if PROXY_STATE
+            .safe_lock(|state| {
+                state.pool_unreachable = true;
+            })
+            .is_err()
+        {
+            error!("Global Proxy Mutex Corrupted");
+            std::process::exit(1);
+        }
+    }
+
     pub fn update_proxy_state_up() {
         if PROXY_STATE
             .safe_lock(|state| {
@@ -231,6 +245,7 @@ impl ProxyState {
                 state.upstream = UpstreamState::Up;
                 state.downstream = DownstreamState::Up;
                 state.inconsistency = None;
+                state.pool_unreachable = false;
             })
             .is_err()
         {
@@ -250,9 +265,9 @@ impl ProxyState {
         }
     }
 
-    pub fn is_pool_down() -> bool {
+    pub fn is_pool_unreachable() -> bool {
         PROXY_STATE
-            .safe_lock(|state| state.pool == PoolState::Down)
+            .safe_lock(|state| state.pool_unreachable)
             .unwrap_or_else(|e| {
                 error!("Global Proxy Mutex Corrupted: {:?}", e);
                 false

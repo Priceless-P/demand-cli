@@ -137,7 +137,7 @@ async fn initialize_proxy(
             match router.connect_pool(pool_addr).await {
                 Ok(connection) => connection,
                 Err(_) => {
-                    ProxyState::update_pool_state(PoolState::Down);
+                    ProxyState::pool_unreachable();
                     error!("No upstream available. Retrying in 5 seconds...");
                     warn!(
                         "Please make sure the your token {} is correct",
@@ -316,10 +316,10 @@ async fn monitor(
         }
 
         // Check if pool is down, if so fetch pool addresses, filter out the current pool address and return a new upstream to reconnect to
-        if ProxyState::is_pool_down() {
+        if ProxyState::is_pool_unreachable() {
             drop(abort_handles); // Drop all abort handles
             server_handle.abort(); // abort server
-            info!("Pool is DOWN. Fetching new pool address...");
+            info!("Pool is unreachable. Fetching new pool address...");
             let pool_addresses = Configuration::pool_address() // this calls fetch_pool_urls internally
                 .await
                 .filter(|p| !p.is_empty())
