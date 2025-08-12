@@ -49,6 +49,8 @@ struct Args {
     monitor: bool,
     #[clap(long, short = 'u')]
     auto_update: bool,
+    #[clap(long, short = 'r', value_enum)]
+    region: Option<Region>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -68,6 +70,7 @@ struct ConfigFile {
     api_server_port: Option<String>,
     monitor: Option<bool>,
     auto_update: Option<bool>,
+    region: Option<String>,
 }
 
 impl ConfigFile {
@@ -88,6 +91,7 @@ impl ConfigFile {
             api_server_port: None,
             monitor: None,
             auto_update: None,
+            region: None,
         }
     }
 }
@@ -108,6 +112,7 @@ pub struct Configuration {
     api_server_port: String,
     monitor: bool,
     auto_update: bool,
+    region: Option<Region>,
 }
 impl Configuration {
     pub fn token() -> Option<String> {
@@ -210,6 +215,10 @@ impl Configuration {
 
     pub fn auto_update() -> bool {
         CONFIG.auto_update
+    }
+
+    fn region() -> Option<Region> {
+        CONFIG.region.clone()
     }
 
     // Loads config from CLI, file, or env vars with precedence: CLI > file > env.
@@ -315,6 +324,15 @@ impl Configuration {
             || config.auto_update.unwrap_or(true)
             || std::env::var("AUTO_UPDATE").is_ok();
 
+        let region = args
+            .region
+            .or(config.region.and_then(|s| Region::from_str(s.as_ref())))
+            .or_else(|| {
+                std::env::var("REGION")
+                    .ok()
+                    .and_then(|s| Region::from_str(&s))
+            });
+
         Configuration {
             token,
             tp_address,
@@ -331,6 +349,7 @@ impl Configuration {
             api_server_port,
             monitor,
             auto_update,
+            region,
         }
     }
 }
@@ -422,8 +441,19 @@ async fn fetch_pool_urls() -> Result<Vec<SocketAddr>, Error> {
     };
 
     debug!("Response status: {}", response.status());
-    let addresses: Vec<PoolAddress> = match response.json().await {
-        Ok(addrs) => addrs,
+    let addresses = match response.json::<Vec<PoolAddress>>().await {
+        Ok(mut addrs) => {
+            // if region is set, put the pools with that region first
+            if let Some(region) = Configuration::region() {
+                let region = region.as_str();
+                addrs.sort_by(|a, b| b.host.contains(region).cmp(&a.host.contains(region)));
+                debug!("Sorted addresses by region '{}': {:?}", region, addrs);
+                addrs
+            } else {
+                debug!("No region set, returning addresses as is: {:?}", addrs);
+                addrs
+            }
+        }
         Err(e) => {
             error!("Failed to parse pool urls: {}", e);
             return Err(Error::from(e));
@@ -446,4 +476,26 @@ async fn fetch_pool_urls() -> Result<Vec<SocketAddr>, Error> {
 struct PoolAddress {
     host: String,
     port: u16,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum, Serialize, Deserialize)]
+enum Region {
+    UsEast,
+    EuNorth,
+}
+
+impl Region {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "us-east" => Some(Region::UsEast),
+            "eu-north" => Some(Region::EuNorth),
+            _ => None,
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        match self {
+            Region::UsEast => "us-east",
+            Region::EuNorth => "eu-north",
+        }
+    }
 }
