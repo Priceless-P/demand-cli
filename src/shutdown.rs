@@ -1,6 +1,5 @@
 use tokio::net::TcpStream;
 use tokio::signal;
-use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::sync::watch;
 use tokio::time::timeout;
 use tracing::{debug, error, info};
@@ -13,7 +12,9 @@ pub fn handle_shutdown() -> watch::Receiver<bool> {
     let (tx, rx) = watch::channel(false);
 
     tokio::spawn(async move {
-        // Set up SIGTERM stream (Unix only)
+        #[cfg(unix)]
+        use tokio::signal::unix::{signal as unix_signal, SignalKind};
+        #[cfg(unix)]
         let mut sigterm = match unix_signal(SignalKind::terminate()) {
             Ok(s) => s,
             Err(e) => {
@@ -21,7 +22,7 @@ pub fn handle_shutdown() -> watch::Receiver<bool> {
                 return;
             }
         };
-
+        #[cfg(unix)]
         tokio::select! {
             res = signal::ctrl_c() => {
                 match res {
@@ -34,6 +35,18 @@ pub fn handle_shutdown() -> watch::Receiver<bool> {
             }
             _ = sigterm.recv() => {
                 info!("Received SIGTERM, shutting down...");
+            }
+        }
+        #[cfg(not(unix))]
+        tokio::select! {
+            res = signal::ctrl_c() => {
+                match res {
+                    Ok(()) => info!("Received SIGINT (Ctrl+C), shutting down..."),
+                    Err(e) => {
+                        error!("Failed to listen for Ctrl+C: {:?}", e);
+                        return;
+                    }
+                }
             }
         }
 
