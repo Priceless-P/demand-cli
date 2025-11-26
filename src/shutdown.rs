@@ -5,6 +5,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 use tracing::{debug, error, info};
 
+use crate::monitor::worker_activity::WorkerActivity;
 use crate::monitor::{self, node_register_endpoint, node_unregister_endpoint};
 
 /// Spawns a background task that listens for SIGINT (Ctrl+C) and SIGTERM,
@@ -38,6 +39,11 @@ pub fn handle_shutdown() -> watch::Receiver<bool> {
         }
 
         update_node_status("unregister").await;
+        WorkerActivity::disconnect_all_active_workers()
+            .await
+            .unwrap_or_else(|e| {
+                error!("Failed to disconnect all active workers: {}", e);
+            });
 
         // Notify all listeners; ignore error if there are no receivers left.
         let _ = tx.send(true);
