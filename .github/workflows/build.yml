@@ -7,6 +7,8 @@ on:
   pull_request:
     branches:
       - master
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
@@ -77,45 +79,11 @@ jobs:
           path: dmnd-client-windows.exe
 
   create-release:
-    name: Create GitHub Release and Upload Binaries
+    name: Upload Release Binaries
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
-    # Only run this job for push events to master or manual workflow dispatch
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'release'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-release
-        run: cargo install cargo-release --version '=0.25.19' --locked
-
-      - name: Check if tag exists
-        id: check_tag
-        run: |
-          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r .packages[0].version)
-          if git ls-remote --tags origin | grep -q "refs/tags/v$VERSION"; then
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "tag_exists=false" >> $GITHUB_OUTPUT
-            echo "TAG_NAME=v$VERSION" >> $GITHUB_ENV
-          fi
-
-      - name: Fail if tag exists
-        if: steps.check_tag.outputs.tag_exists == 'true'
-        run: |
-          echo "Release tag already exists, aborting workflow to prevent overwriting."
-          exit 1
-
-      - name: Create and push tag
-        if: steps.check_tag.outputs.tag_exists == 'false'
-        run: |
-          git tag "${{ env.TAG_NAME }}"
-          git push origin "${{ env.TAG_NAME }}"
-
-
       - name: Download Linux Artifact
         uses: actions/download-artifact@v4
         with:
@@ -134,10 +102,10 @@ jobs:
           name: windows-artifact
           path: .
 
-      - name: Create GitHub Release and Upload Binaries
+      - name: Upload Binaries to Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.TAG_NAME }}
+          tag_name: ${{ github.event.release.tag_name }}
           files: |
             dmnd-client-linux
             dmnd-client-macos
