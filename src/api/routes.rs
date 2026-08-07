@@ -3,9 +3,10 @@ use super::{
     utils::get_cpu_and_memory_usage,
     AppState, PRIORITIZED_TRANSACTIONS_POLL_LOCK,
 };
-use crate::{config::Configuration, proxy_state::ProxyState};
+use crate::db::prioritized;
+use crate::{config::Configuration, db::history, proxy_state::ProxyState};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
@@ -77,6 +78,12 @@ fn template_payload(
         payload["transactions"] = json!(transactions);
     }
     payload
+}
+
+/// `None` keeps everything.
+#[derive(Debug, Deserialize)]
+pub struct HistoryRetentionRequest {
+    pub keep_blocks: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -401,6 +408,7 @@ impl Api {
                     .unwrap_or(0);
                 let fee_delta = current_fee_delta + fee_delta;
                 crate::prioritized_transactions::PRIORITIZED_TRANSACTIONS.record(txid, fee_delta);
+                prioritized::record(prioritized::MANUAL, &txid, fee_delta).await;
                 crate::api::set_node_prioritized_view(None);
                 info!("transaction prioritized in bitcoind: {txid}");
                 (
@@ -550,6 +558,163 @@ impl Api {
 
         (StatusCode::OK, Json(APIResponse::success(Some(response))))
     }
+
+    /// One page of declarations, newest first.
+    pub async fn get_job_history(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Query(params): Query<std::collections::HashMap<String, String>>,
+    ) -> impl IntoResponse {
+        if let Some(refusal) = check_authorization(&state, &headers) {
+            return refusal;
+        }
+        let Some(db) = crate::db::pool() else {
+            return no_database();
+        };
+        let page = params
+            .get("page")
+            .and_then(|p| p.parse::<i64>().ok())
+            .unwrap_or(1);
+        let per_page = params
+            .get("per_page")
+            .and_then(|p| p.parse::<i64>().ok())
+            .unwrap_or(10);
+
+        match history::page(db, page, per_page).await {
+            Ok(response) => (StatusCode::OK, Json(APIResponse::success(Some(response)))),
+            Err(e) => internal(format!("Failed to get job history: {e}")),
+        }
+    }
+
+    /// One page of stored prioritizations, newest first.
+    pub async fn get_prioritized_history(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Query(params): Query<std::collections::HashMap<String, String>>,
+    ) -> impl IntoResponse {
+        if let Some(refusal) = check_authorization(&state, &headers) {
+            return refusal;
+        }
+        let Some(db) = crate::db::pool() else {
+            return no_database();
+        };
+        let page = params
+            .get("page")
+            .and_then(|p| p.parse::<i64>().ok())
+            .unwrap_or(1);
+        let per_page = params
+            .get("per_page")
+            .and_then(|p| p.parse::<i64>().ok())
+            .unwrap_or(10);
+
+        match prioritized::page(db, page, per_page).await {
+            Ok(response) => (StatusCode::OK, Json(APIResponse::success(Some(response)))),
+            Err(e) => internal(format!("Failed to get the prioritization history: {e}")),
+        }
+    }
+
+    /// The transactions in the latest declaration of a template.
+    pub async fn get_job_txids(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Path(template_id): Path<i64>,
+    ) -> impl IntoResponse {
+        if let Some(refusal) = check_authorization(&state, &headers) {
+            return refusal;
+        }
+        let Some(db) = crate::db::pool() else {
+            return no_database();
+        };
+        let txids = match history::txids(db, template_id).await {
+            Ok(txids) => txids,
+            Err(e) => return internal(format!("Failed to get job txids: {e}")),
+        };
+
+        (
+            StatusCode::OK,
+            Json(APIResponse::success(Some(json!({
+                "template_id": template_id,
+                "total": txids.len(),
+                "txids": txids,
+            })))),
+        )
+    }
+
+    /// How many blocks of history the proxy is keeping.
+    pub async fn get_history_retention(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> impl IntoResponse {
+        if let Some(refusal) = check_authorization(&state, &headers) {
+            return refusal;
+        }
+        let Some(db) = crate::db::pool() else {
+            return no_database();
+        };
+        (
+            StatusCode::OK,
+            Json(APIResponse::success(Some(json!({
+                "keep_blocks": history::keep_blocks(db).await,
+                "default_keep_blocks": history::default_keep_blocks(),
+            })))),
+        )
+    }
+
+    /// Set retention; null keeps everything.
+    pub async fn set_history_retention(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+        Json(request): Json<HistoryRetentionRequest>,
+    ) -> impl IntoResponse {
+        if let Some(refusal) = check_authorization(&state, &headers) {
+            return refusal;
+        }
+        let Some(db) = crate::db::pool() else {
+            return no_database();
+        };
+        if let Some(keep) = request.keep_blocks {
+            if keep < 1 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(APIResponse::error(Some(
+                        "keep_blocks must be at least 1, or null to keep everything".to_string(),
+                    ))),
+                );
+            }
+        }
+        match history::set_keep_blocks(db, request.keep_blocks).await {
+            Ok(()) => {
+                info!(keep_blocks = ?request.keep_blocks, "history retention set");
+                (
+                    StatusCode::OK,
+                    Json(APIResponse::success(Some(
+                        json!({ "keep_blocks": request.keep_blocks }),
+                    ))),
+                )
+            }
+            Err(e) => internal(format!("Failed to set the history retention: {e}")),
+        }
+    }
+
+    /// Delete the whole history.
+    pub async fn clear_job_history(
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> impl IntoResponse {
+        if let Some(refusal) = check_authorization(&state, &headers) {
+            return refusal;
+        }
+        let Some(db) = crate::db::pool() else {
+            return no_database();
+        };
+        match history::clear(db).await {
+            Ok(removed) => (
+                StatusCode::OK,
+                Json(APIResponse::success(Some(json!({ "removed": removed })))),
+            ),
+            Err(e) => internal(format!("Failed to clear the job history: {e}")),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -630,6 +795,24 @@ pub struct APIResponse<T> {
     success: bool,
     message: Option<String>,
     data: Option<T>,
+}
+
+/// Shared 503 for database-backed endpoints.
+fn no_database<T: Serialize>() -> (StatusCode, Json<APIResponse<T>>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(APIResponse::error(Some(
+            "Database not available".to_string(),
+        ))),
+    )
+}
+
+fn internal<T: Serialize>(message: String) -> (StatusCode, Json<APIResponse<T>>) {
+    error!(%message);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(APIResponse::error(Some(message))),
+    )
 }
 
 impl<T: Serialize> APIResponse<T> {
@@ -1330,4 +1513,37 @@ async fn the_configured_token_reaches_the_job_declaration_routes() {
             .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn history_routes_require_dashboard_authorization() {
+    for headers in [HeaderMap::new(), bearer("wrong")] {
+        let state = declaration_test_state(Some("api-token"));
+        let responses = [
+            Api::get_job_history(State(state.clone()), headers.clone(), Query(HashMap::new()))
+                .await
+                .into_response(),
+            Api::get_job_txids(State(state.clone()), headers.clone(), Path(1))
+                .await
+                .into_response(),
+            Api::get_history_retention(State(state.clone()), headers.clone())
+                .await
+                .into_response(),
+            Api::set_history_retention(
+                State(state.clone()),
+                headers.clone(),
+                Json(HistoryRetentionRequest {
+                    keep_blocks: Some(5),
+                }),
+            )
+            .await
+            .into_response(),
+            Api::clear_job_history(State(state), headers)
+                .await
+                .into_response(),
+        ];
+        for response in responses {
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
 }

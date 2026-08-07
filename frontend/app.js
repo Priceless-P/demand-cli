@@ -8,8 +8,10 @@ const ACCELERATIONS_REFRESH_INTERVAL = 30_000;
 
 const ROUTES = {
   "/dashboard/overview": "Overview",
-  "/dashboard/accelerations": "mempool.space accelerations",
+  "/dashboard/accelerations": "Mempool.space accelerations",
   "/dashboard/rsk": "RSK merge mining",
+  "/dashboard/job-history": "Declared templates",
+  "/dashboard/prioritized-history": "Prioritisation history",
 };
 
 // Ranking criteria; keys are the backend policy names. `value` is null when a
@@ -53,6 +55,14 @@ const LOG_FILTERS = [
   ["error", "Errors"],
 ];
 
+// Retention choices; this bounds the database size.
+const HISTORY_RETENTIONS = [
+  [5, "last 5 blocks"],
+  [10, "last 10 blocks"],
+  [20, "last 20 blocks"],
+  ["", "until I delete"],
+];
+
 const state = {
   route: normalizeRoute(window.location.pathname),
   mode: localStorage.getItem("demand-mode") || "light",
@@ -70,6 +80,25 @@ const state = {
   logs: [],
   logFilter: "all",
   miners: null,
+  jobs: [],
+  jobPage: 1,
+  // How many blocks of history the proxy keeps; null means until deleted by hand.
+  historyKeepBlocks: 5,
+  jobPerPage: 10,
+  jobTotal: 0,
+  jobTotalPages: 0,
+  jobsLoading: false,
+  jobsError: null,
+  // Stored prioritizations, newest first: one page of /api/prioritized-history.
+  prioritized: {
+    rows: [],
+    page: 1,
+    perPage: 10,
+    total: 0,
+    totalPages: 0,
+    loading: false,
+    error: null,
+  },
   // The newest template the poll has shown, so the next one is noticed.
   newestTemplateId: null,
   // Candidate summaries from /api/templates/recent, newest first.
@@ -154,7 +183,15 @@ const ICON_PATHS = {
   upload:
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  external:
+    '<path d="M15 3h6v6M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   hash: '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
+  chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+  chevronRight: '<path d="m9 18 6-6-6-6"/>',
+  chevronsLeft: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
+  chevronsRight: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12"/><circle cx="12" cy="12" r="3"/>',
+  trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/>',
   undo: '<path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
   layers:
@@ -171,6 +208,7 @@ function normalizeRoute(path) {
   const clean = path.replace(/\.html$/, "").replace(/\/$/, "") || "/";
   if (clean === "/" || clean === "/dashboard") return "/dashboard/overview";
   if (clean === "/overview") return "/dashboard/overview";
+  if (clean === "/history") return "/dashboard/job-history";
   return ROUTES[clean] ? clean : "/dashboard/overview";
 }
 
@@ -201,6 +239,24 @@ function formatBytes(value) {
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
+const DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
+  month: "long",
+  day: "numeric",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+function formatDate(value) {
+  if (!value) return "N/A";
+  const raw = Number(value);
+  const date = Number.isFinite(raw)
+    ? new Date(raw < 10_000_000_000 ? raw * 1000 : raw)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return "N/A";
+  return DATE_FORMAT.format(date);
+}
+
 function shortHash(value, front = 8, back = 8) {
   const text = String(value || "");
   return text.length > front + back + 3
@@ -225,8 +281,10 @@ function renderShell() {
     <aside id="sidebar" class="sidebar">
       <nav class="sidebar-nav" aria-label="Dashboard navigation">
         ${sidebarLink("/dashboard/overview", "dashboard", "Dashboard")}
-        ${sidebarLink("/dashboard/accelerations", "trend", "mempool.space accelerations")}
+        ${sidebarLink("/dashboard/accelerations", "trend", "Mempool.space accelerations")}
         ${sidebarLink("/dashboard/rsk", "layers", "RSK merge mining")}
+        ${sidebarLink("/dashboard/job-history", "history", "Declared templates")}
+        ${sidebarLink("/dashboard/prioritized-history", "pin", "Prioritisation history")}
       </nav>
     </aside>
     <div class="main-shell">
@@ -281,7 +339,10 @@ function navigate(route, replace = false) {
 function renderRoute() {
   closeModal();
   closePanel();
-  if (state.route === "/dashboard/overview") renderOverview();
+  if (state.route === "/dashboard/job-history") renderJobHistory();
+  else if (state.route === "/dashboard/prioritized-history")
+    renderPrioritizedHistory();
+  else if (state.route === "/dashboard/overview") renderOverview();
   else renderActivityPage();
 }
 
@@ -323,10 +384,16 @@ function handleRejectedToken(error) {
   closeModal();
   closePanel();
   state.templates = [];
+  state.jobs = [];
+  state.jobsError = null;
+  state.prioritized.rows = [];
+  state.prioritized.error = null;
+  renderPrioritizedContent();
   state.miningActivity.accelerations = null;
   state.miningActivity.rsk = null;
   renderMiningActivity();
   renderTemplatesSection();
+  renderJobHistoryContent();
   return true;
 }
 
@@ -571,7 +638,7 @@ function renderActivityStats(values = []) {
         ]
       : [
           ["trend", "Tracked transactions", "mempool.space accelerations tracked on your node"],
-          ["checkCircle", "In your mempool", "Available for block selection"],
+          ["checkCircle", "In your node", "Available for block selection"],
           [
             "layers",
             "In active template",
@@ -966,6 +1033,402 @@ function summaryMetric(label, value) {
   return `<div class="summary-metric"><div class="summary-metric-label">${label}</div><div class="summary-metric-value">${value}</div></div>`;
 }
 
+function detail(label, value) {
+  return `<div><div class="detail-label">${label}</div><div class="detail-value">${escapeHtml(value)}</div></div>`;
+}
+
+function renderJobHistory() {
+  const page = currentPageElement();
+  page.className = "page compact-top";
+  page.innerHTML = `<section class="page-header">
+    <div><h1 class="page-title">Declared templates</h1><p class="page-description">Every template this proxy has declared, newest first, under the block it was declared for.</p></div>
+    <div class="page-actions"><button class="tiny-setting" type="button" data-action="open-retention" id="retention-open"></button></div>
+  </section><div id="job-history-content"></div>`;
+  renderJobHistoryContent();
+  if (!state.apiToken) return;
+  loadJobHistory();
+  // Fetched once per page visit.
+  loadHistoryRetention();
+}
+
+async function loadJobHistory() {
+  state.jobsLoading = true;
+  state.jobsError = null;
+  renderJobHistoryContent();
+  try {
+    const data = await envelopeRequest(
+      `/api/job-history?page=${state.jobPage}&per_page=${state.jobPerPage}`,
+      { headers: authHeaders() },
+    );
+    state.jobs = data?.jobs || [];
+    state.jobTotal = Number(data?.total) || 0;
+    state.jobTotalPages = Number(data?.total_pages) || 0;
+  } catch (error) {
+    handleRejectedToken(error);
+    state.jobsError = error.message;
+  } finally {
+    state.jobsLoading = false;
+    renderJobHistoryContent();
+  }
+}
+
+async function loadHistoryRetention() {
+  try {
+    const data = await envelopeRequest("/api/history/retention", { headers: authHeaders() });
+    state.historyKeepBlocks = data?.keep_blocks ?? null;
+  } catch (_) {
+    // Keep the last known value.
+  }
+  renderRetentionButton();
+}
+
+async function saveHistoryRetention(value) {
+  const keep_blocks = value === "" ? null : Number(value);
+  const previous = state.historyKeepBlocks;
+  state.historyKeepBlocks = keep_blocks;
+  try {
+    await envelopeRequest("/api/history/retention", {
+      headers: authHeaders(),
+      method: "POST",
+      body: JSON.stringify({ keep_blocks }),
+    });
+    toast(
+      "Retention set",
+      keep_blocks === null
+        ? "History is kept until you delete it."
+        : `Only the last ${keep_blocks} blocks are kept. Anything older has been removed.`,
+      "success",
+    );
+    // Applied immediately by the proxy, so the list on screen is already stale.
+    loadJobHistory();
+  } catch (error) {
+    state.historyKeepBlocks = previous;
+    toast("Could not change the retention", error.message, "error");
+  }
+  // Patch the open dialog; a rejected change puts the radio back.
+  refreshRetentionModal();
+}
+
+function refreshRetentionModal() {
+  const form = document.querySelector("#retention-form");
+  if (!form) return;
+  const chosenValue = String(state.historyKeepBlocks ?? "");
+  form.querySelectorAll(".auto-declare-option").forEach((option) => {
+    const input = option.querySelector("input");
+    const chosen = input.value === chosenValue;
+    option.classList.toggle("is-chosen", chosen);
+    input.checked = chosen;
+  });
+  renderRetentionButton();
+}
+
+// Irreversible: the stored txid lists exist nowhere else.
+function openClearHistoryModal() {
+  const total = state.jobTotal;
+  if (!total) return;
+  openModal({
+    title: "Delete history",
+    description: `${formatNumber(total)} declaration${total === 1 ? "" : "s"} will be removed.`,
+    size: "",
+    body: `<p class="auto-declare-note">The transaction list each one declared exists nowhere
+        else — a candidate is dropped from memory the moment the tip moves. This cannot be undone.</p>
+      <div class="modal-actions">
+        <button class="btn" type="button" data-action="close-modal">Cancel</button>
+        <button class="btn danger" type="button" data-action="confirm-clear-history">${icon("trash", 14)} Delete all</button>
+      </div>`,
+  });
+}
+
+async function clearJobHistory() {
+  const total = state.jobTotal;
+  if (!total) return;
+  try {
+    const data = await envelopeRequest("/api/job-history", {
+      headers: authHeaders(),
+      method: "DELETE",
+    });
+    toast(
+      "History deleted",
+      `${formatNumber(data?.removed ?? total)} removed.`,
+      "success",
+    );
+    state.jobPage = 1;
+    closeModal();
+    loadJobHistory();
+  } catch (error) {
+    toast("Could not delete the history", error.message, "error");
+  }
+}
+
+const PRIORITIZED_SOURCE = {
+  manual: "Manual",
+  mempool_space: "Mempool accelerated",
+};
+
+const PRIORITIZED_COLUMNS = 5;
+
+function renderPrioritizedHistory() {
+  const page = currentPageElement();
+  page.className = "page compact-top";
+  page.innerHTML = `<section class="page-header">
+    <div><h1 class="page-title">Prioritisation history</h1><p class="page-description">Record of all prioritised transactions.</p></div>
+  </section><div id="prioritized-content"></div>`;
+  renderPrioritizedContent();
+  if (!state.apiToken) return;
+  loadPrioritizedHistory();
+}
+
+async function loadPrioritizedHistory() {
+  const view = state.prioritized;
+  view.loading = true;
+  view.error = null;
+  renderPrioritizedContent();
+  try {
+    const data = await envelopeRequest(
+      `/api/prioritized-history?page=${view.page}&per_page=${view.perPage}`,
+      { headers: authHeaders() },
+    );
+    view.rows = data?.transactions || [];
+    view.total = Number(data?.total) || 0;
+    view.totalPages = Number(data?.total_pages) || 0;
+  } catch (error) {
+    handleRejectedToken(error);
+    view.error = error.message;
+  } finally {
+    view.loading = false;
+    renderPrioritizedContent();
+  }
+}
+
+function changePrioritizedPage(action) {
+  const view = state.prioritized;
+  const totalPages = Math.max(1, view.totalPages || 1);
+  if (action === "first") view.page = 1;
+  else if (action === "previous") view.page = Math.max(1, view.page - 1);
+  else if (action === "next") view.page = Math.min(totalPages, view.page + 1);
+  else if (action === "last") view.page = totalPages;
+  loadPrioritizedHistory();
+}
+
+function renderPrioritizedContent() {
+  const root = document.querySelector("#prioritized-content");
+  if (!root) return;
+  if (activityNeedsToken(root)) return;
+  const view = state.prioritized;
+  if (view.error) {
+    root.innerHTML = `<section class="card history-error"><div>Error loading the prioritisation history: ${escapeHtml(view.error)}</div><button class="btn" type="button" data-action="refresh-prioritized">${icon("refresh", 16)} Try Again</button></section>`;
+    return;
+  }
+  const totalPages = Math.max(1, view.totalPages || 1);
+  const start = view.total ? (view.page - 1) * view.perPage + 1 : 0;
+  const end = Math.min(view.page * view.perPage, view.total);
+  root.innerHTML = `<section class="card history-card">
+    <div class="history-toolbar">
+      <button class="btn small" type="button" data-action="refresh-prioritized" ${view.loading ? "disabled" : ""}>${icon("refresh", 15)} Refresh</button>
+      <span class="muted">${view.loading ? "Loading…" : `${formatNumber(view.total)} transaction${view.total === 1 ? "" : "s"}`}</span>
+    </div>
+    <div class="table-shell"><table class="data-table history-table"><thead><tr><th>Transaction</th><th>Source</th><th class="right">Fee adjustment</th><th>Declared</th><th>Recorded</th></tr></thead><tbody>${renderPrioritizedRows()}</tbody></table></div>
+    <div class="history-pagination"><span>Showing ${start} to ${end} of ${formatNumber(view.total)} entries</span><div class="pagination-controls"><label class="nowrap">Rows per page <select id="prioritized-page-size" class="select-control"><option>10</option><option>20</option><option>30</option><option>50</option></select></label><span>Page ${view.page} of ${totalPages}</span><button class="icon-btn" data-prioritized-page="first" ${view.page <= 1 ? "disabled" : ""}>${icon("chevronsLeft", 15)}</button><button class="icon-btn" data-prioritized-page="previous" ${view.page <= 1 ? "disabled" : ""}>${icon("chevronLeft", 15)}</button><button class="icon-btn" data-prioritized-page="next" ${view.page >= totalPages ? "disabled" : ""}>${icon("chevronRight", 15)}</button><button class="icon-btn" data-prioritized-page="last" ${view.page >= totalPages ? "disabled" : ""}>${icon("chevronsRight", 15)}</button></div></div>
+  </section>`;
+  const pageSize = root.querySelector("#prioritized-page-size");
+  if (pageSize) pageSize.value = String(view.perPage);
+}
+
+function renderPrioritizedRows() {
+  const view = state.prioritized;
+  if (view.loading && !view.rows.length)
+    return `<tr><td colspan="${PRIORITIZED_COLUMNS}" class="empty-cell">Loading…</td></tr>`;
+  if (!view.rows.length)
+    return `<tr><td colspan="${PRIORITIZED_COLUMNS}" class="empty-cell">Nothing has been prioritised yet.</td></tr>`;
+
+  return view.rows
+    .map((row) => {
+      const delta = Number(row.fee_delta) || 0;
+      return `<tr>
+        <td>${activityTxid(row.txid)}</td>
+        <td class="nowrap">${escapeHtml(PRIORITIZED_SOURCE[row.source] || row.source)}</td>
+        <td class="right nowrap">${delta > 0 ? "+" : ""}${formatNumber(delta)} sats</td>
+        <td><span class="badge ${row.declared ? "success" : ""}">${row.declared ? "Yes" : "No"}</span></td>
+        <td class="nowrap muted">${escapeHtml(new Date(Number(row.created_at) * 1000).toLocaleString())}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function renderJobHistoryContent() {
+  const root = document.querySelector("#job-history-content");
+  if (!root) return;
+  if (activityNeedsToken(root)) return;
+  if (state.jobsError) {
+    root.innerHTML = `<section class="card history-error"><div>Error loading job history: ${escapeHtml(state.jobsError)}</div><button class="btn" type="button" data-action="refresh-history">${icon("refresh", 16)} Try Again</button></section>`;
+    return;
+  }
+  const totalPages = Math.max(1, state.jobTotalPages || 1);
+  const start = state.jobTotal ? (state.jobPage - 1) * state.jobPerPage + 1 : 0;
+  const end = Math.min(state.jobPage * state.jobPerPage, state.jobTotal);
+  root.innerHTML = `<section class="card history-card">
+    <div class="history-toolbar">
+      <div class="button-row" style="gap:.5rem">
+        <button class="btn small" type="button" data-action="refresh-history" ${state.jobsLoading ? "disabled" : ""}>${icon("refresh", 15)} Refresh</button>
+        <button class="btn small danger" type="button" data-action="clear-history" ${state.jobTotal ? "" : "disabled"}>${icon("trash", 14)} Delete all</button>
+      </div>
+      <span class="muted">${state.jobsLoading ? "Loading…" : `${state.jobTotal} declaration${state.jobTotal === 1 ? "" : "s"}`}</span>
+    </div>
+    <div class="table-shell"><table class="data-table history-table"><thead><tr><th>JD No</th><th>Template</th><th class="right">Fees (BTC)</th><th class="right">TXs</th><th class="right">Block fill</th><th>Channel</th><th>Mining Job Token</th><th>Declared</th><th>Actions</th></tr></thead><tbody>${renderJobRows()}</tbody></table></div>
+    <div class="history-pagination"><span>Showing ${start} to ${end} of ${state.jobTotal} entries</span><div class="pagination-controls"><label class="nowrap">Rows per page <select id="job-page-size" class="select-control"><option>10</option><option>20</option><option>30</option><option>50</option></select></label><span>Page ${state.jobPage} of ${totalPages}</span><button class="icon-btn" data-job-page="first" ${state.jobPage <= 1 ? "disabled" : ""}>${icon("chevronsLeft", 15)}</button><button class="icon-btn" data-job-page="previous" ${state.jobPage <= 1 ? "disabled" : ""}>${icon("chevronLeft", 15)}</button><button class="icon-btn" data-job-page="next" ${state.jobPage >= totalPages ? "disabled" : ""}>${icon("chevronRight", 15)}</button><button class="icon-btn" data-job-page="last" ${state.jobPage >= totalPages ? "disabled" : ""}>${icon("chevronsRight", 15)}</button></div></div>
+  </section>`;
+  const pageSize = root.querySelector("#job-page-size");
+  if (pageSize) pageSize.value = String(state.jobPerPage);
+  renderRetentionButton();
+}
+
+function renderRetentionButton() {
+  const button = document.querySelector("#retention-open");
+  if (!button) return;
+  button.innerHTML = `${icon("sliders", 13)} Retain ${escapeHtml(retentionLabel())}`;
+}
+
+function retentionLabel() {
+  const match = HISTORY_RETENTIONS.find(
+    ([value]) => String(value) === String(state.historyKeepBlocks ?? ""),
+  );
+  return match ? match[1] : "last 5 blocks";
+}
+
+function openRetentionModal() {
+  openModal({
+    title: "History",
+    description: "",
+    size: "",
+    body: `<form id="retention-form" class="auto-declare">
+      ${HISTORY_RETENTIONS.map(
+        ([
+          value,
+          label,
+        ]) => `<label class="auto-declare-option ${String(state.historyKeepBlocks ?? "") === String(value) ? "is-chosen" : ""}">
+          <input type="radio" name="keep_blocks" value="${escapeHtml(value)}" ${String(state.historyKeepBlocks ?? "") === String(value) ? "checked" : ""} />
+          <span class="auto-declare-copy"><strong>${escapeHtml(label)}</strong></span>
+        </label>`,
+      ).join("")}
+      <p class="auto-declare-note">Older blocks are dropped as they fall outside this.</p>
+    </form>`,
+  });
+}
+
+const HISTORY_COLUMNS = 9;
+
+// History rows, grouped under the block each declaration was for.
+function renderJobRows() {
+  if (state.jobsLoading && !state.jobs.length)
+    return `<tr><td colspan="${HISTORY_COLUMNS}" class="empty-cell">Loading…</td></tr>`;
+  if (!state.jobs.length)
+    return `<tr><td colspan="${HISTORY_COLUMNS}" class="empty-cell">Nothing has been declared yet.</td></tr>`;
+
+  const rows = [];
+  let block;
+
+  state.jobs.forEach((job, index) => {
+    if (index === 0 || job.height !== block) {
+      block = job.height;
+      rows.push(`<tr class="hist-block"><td colspan="${HISTORY_COLUMNS}">
+        ${icon("layers", 13)}
+        <strong>${known(block) ? `Block ${formatNumber(block)}` : "Block not recorded"}</strong>
+      </td></tr>`);
+    }
+
+    const fill = known(job.total_weight)
+      ? `${((job.total_weight / MAX_BLOCK_WEIGHT) * 100).toFixed(2)}%`
+      : '<span class="muted">—</span>';
+
+    rows.push(`<tr>
+      <td><strong>#${formatNumber(job.id)}</strong></td>
+      <td><code>${escapeHtml(job.template_id)}</code></td>
+      <td class="right">${known(job.total_fees_sat) ? formatBtc(job.total_fees_sat) : '<span class="muted">—</span>'}</td>
+      <td class="right">${formatNumber(job.txid_count)}</td>
+      <td class="right">${fill}</td>
+      <td><span class="badge">CH-${escapeHtml(job.channel_id)}</span></td>
+      <td><span class="inline" style="gap:.35rem"><code>${escapeHtml(shortHash(job.mining_job_token))}</code><button class="icon-btn btn ghost" type="button" data-copy="${escapeHtml(job.mining_job_token)}" aria-label="Copy mining job token">${icon("copy", 13)}</button></span></td>
+      <td class="muted">${escapeHtml(formatDate(job.created_at))}</td>
+      <td><button class="btn ghost small" type="button" data-view-txids="${escapeHtml(job.template_id)}">${icon("eye", 14)} View TXIDs</button></td>
+    </tr>`);
+  });
+
+  return rows.join("");
+}
+
+async function openJobTxids(templateId) {
+  openModal({
+    title: `Job TXIDs - Template ${templateId}`,
+    description: "Transaction IDs included in this job declaration",
+    size: "xlarge",
+    body: '<div class="empty-cell" style="display:grid;place-items:center">Loading transaction IDs...</div>',
+  });
+  try {
+    const data = await envelopeRequest(
+      `/api/job-txids/${encodeURIComponent(templateId)}`,
+      { headers: authHeaders() },
+    );
+    const txids = data?.txids || [];
+    state.modalCopyText = txids.join("\n");
+    openModal({
+      title: `Job TXIDs - Template ${templateId}`,
+      description: "Transaction IDs included in this job declaration",
+      size: "xlarge",
+      body: `<div class="detail-card"><h4>${icon("hash", 16)} Transaction Summary</h4><div class="details-grid">${detail("Template ID", data?.template_id ?? templateId)}${detail("Total TXIDs", data?.total ?? txids.length)}</div></div>
+      <div class="validation-head" style="margin:1rem 0"><span class="badge" data-job-txid-count>${txids.length} Transaction${txids.length === 1 ? "" : "s"}</span><div class="button-row" style="gap:.5rem"><button class="btn small" type="button" data-action="copy-modal-text">${icon("copy", 14)} Copy All</button><button class="btn small" type="button" data-export-txids="${escapeHtml(templateId)}">${icon("download", 14)} Export CSV</button></div></div>
+      <label class="panel-field" style="margin-bottom:1rem"><span class="panel-label">Search transaction IDs</span><input class="panel-input" id="job-txid-search" type="search" spellcheck="false" autocomplete="off" placeholder="Search transaction" /></label>
+      <h4>Transaction IDs</h4><div class="txid-list"><div class="empty-cell" data-job-txid-empty hidden>No matching transaction ID.</div>${txids.map((txid, index) => `<div class="txid-row" data-job-txid="${escapeHtml(txid.toLowerCase())}"><span class="badge">${index + 1}</span><span class="txid-value" title="${escapeHtml(txid)}">${escapeHtml(txid)}</span><div class="button-row"><button class="icon-btn btn ghost" data-copy="${escapeHtml(txid)}" aria-label="Copy transaction ID">${icon("copy", 14)}</button><a class="icon-btn btn ghost" href="https://mempool.space/tx/${encodeURIComponent(txid)}" target="_blank" rel="noopener noreferrer" aria-label="View on mempool.space">${icon("external", 14)}</a></div></div>`).join("")}</div>`,
+    });
+    const search = document.querySelector("#job-txid-search");
+    search?.addEventListener("input", () => {
+      const query = search.value.trim().toLowerCase();
+      const rows = [...document.querySelectorAll("[data-job-txid]")];
+      let matches = 0;
+      rows.forEach((row) => {
+        const matchesQuery = row.dataset.jobTxid.includes(query);
+        row.hidden = !matchesQuery;
+        if (matchesQuery) matches += 1;
+      });
+      const count = document.querySelector("[data-job-txid-count]");
+      if (count)
+        count.textContent = query
+          ? `${matches} of ${txids.length} shown`
+          : `${txids.length} Transaction${txids.length === 1 ? "" : "s"}`;
+      const empty = document.querySelector("[data-job-txid-empty]");
+      if (empty) empty.hidden = matches !== 0;
+    });
+    document
+      .querySelector("[data-export-txids]")
+      ?.addEventListener(
+        "click",
+        () =>
+          downloadText(
+            ["txid", ...txids].join("\n"),
+            `job-txids-${templateId}.csv`,
+            "text/csv;charset=utf-8",
+          ),
+        { once: true },
+      );
+  } catch (error) {
+    openModal({
+      title: `Job TXIDs - Template ${templateId}`,
+      description: "Transaction IDs included in this job declaration",
+      body: `<div class="history-error">Error: ${escapeHtml(error.message)}</div>`,
+    });
+  }
+}
+
+function changeJobPage(action) {
+  const totalPages = Math.max(1, state.jobTotalPages || 1);
+  if (action === "first") state.jobPage = 1;
+  else if (action === "previous")
+    state.jobPage = Math.max(1, state.jobPage - 1);
+  else if (action === "next")
+    state.jobPage = Math.min(totalPages, state.jobPage + 1);
+  else if (action === "last") state.jobPage = totalPages;
+  loadJobHistory();
+}
+
 async function copyWithToast(text) {
   try {
     await copyText(text);
@@ -997,6 +1460,11 @@ const CLICK_ACTIONS = {
       closePanel();
   },
   "dismiss-toast": (event, target) => target.closest(".toast")?.remove(),
+  "refresh-history": () => loadJobHistory(),
+  "refresh-prioritized": () => loadPrioritizedHistory(),
+  "open-retention": () => openRetentionModal(),
+  "clear-history": () => openClearHistoryModal(),
+  "confirm-clear-history": () => clearJobHistory(),
   "refresh-templates": () => loadTemplates(),
   "refresh-mining-activity": () => loadMiningActivity(),
   "open-prioritize": () => openPrioritizePanel(),
@@ -1038,6 +1506,17 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  const jobPage = event.target.closest("[data-job-page]");
+  if (jobPage) return changeJobPage(jobPage.dataset.jobPage);
+
+  const prioritizedPage = event.target.closest("[data-prioritized-page]");
+  if (prioritizedPage)
+    return changePrioritizedPage(prioritizedPage.dataset.prioritizedPage);
+
+  const viewTxids = event.target.closest("[data-view-txids]");
+  if (viewTxids)
+    return openJobTxids(viewTxids.dataset.viewTxids);
+
   const opener = event.target.closest("[data-template-open]");
   if (opener) openTemplateTransactions(Number(opener.dataset.templateOpen));
 });
@@ -1050,6 +1529,19 @@ document.addEventListener("change", async (event) => {
     // Switching sort resets the direction to descending.
     state.templateSort = { key: target.value, direction: "desc" };
     renderTemplatesSection();
+  } else if (
+    target.name === "keep_blocks" &&
+    target.closest("#retention-form")
+  ) {
+    await saveHistoryRetention(target.value);
+  } else if (target.id === "prioritized-page-size") {
+    state.prioritized.perPage = Number(target.value);
+    state.prioritized.page = 1;
+    loadPrioritizedHistory();
+  } else if (target.id === "job-page-size") {
+    state.jobPerPage = Number(target.value);
+    state.jobPage = 1;
+    loadJobHistory();
   }
 });
 
@@ -1754,6 +2246,8 @@ async function submitApiToken(form, token) {
   renderMiningActivity();
   loadTemplates();
   loadMiningActivity();
+  if (state.route === "/dashboard/job-history") renderJobHistory();
+  if (state.route === "/dashboard/prioritized-history") renderPrioritizedHistory();
 }
 
 // Prioritise a transaction, or say what is stopping it: what the proxy was
@@ -1888,6 +2382,9 @@ async function prioritizeTransaction(txid, feeDelta) {
       `Prioritised ${txid} by ${feeDelta} sats`,
     );
     closePanel();
+    if (state.route === "/dashboard/accelerations")
+      loadMiningActivity("acceleration");
+    if (state.route === "/dashboard/prioritized-history") loadPrioritizedHistory();
   } catch (error) {
     toast("Prioritisation failed", error.message, "error");
     addLog(
