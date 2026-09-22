@@ -1,9 +1,15 @@
-use self_update::{backends, cargo_crate_version, update::UpdateStatus, TempDir};
-use tracing::{debug, error, info};
+use minisign_verify::{PublicKey, Signature};
+use self_update::{
+    backends, cargo_crate_version,
+    update::{ReleaseAsset, UpdateStatus},
+    TempDir,
+};
+use tracing::{debug, error, info, warn};
 
 const REPO_OWNER: &str = "dmnd-pool";
 const REPO_NAME: &str = "dmnd-client";
 const BIN_NAME: &str = "dmnd-client";
+const RELEASE_PUBLIC_KEY: &str = include_str!("../release-signing.pub");
 
 pub fn check_update_proxy() {
     info!("Checking for latest released version...");
@@ -43,6 +49,40 @@ pub fn check_update_proxy() {
         }
     };
 
+    let latest_release = match updater.get_latest_release() {
+        Ok(release) => release,
+        Err(e) => {
+            error!("Failed to check the latest release: {}", e);
+            return;
+        }
+    };
+    if !self_update::version::bump_is_greater(
+        cargo_crate_version!(),
+        &latest_release.version,
+    )
+    .unwrap_or(false)
+    {
+        info!("Package is up to date");
+        return;
+    }
+
+    let signature_name = format!("{target_bin}.minisig");
+    if !latest_release
+        .assets
+        .iter()
+        .any(|asset| asset.name == target_bin)
+        || !latest_release
+            .assets
+            .iter()
+            .any(|asset| asset.name == signature_name)
+    {
+        warn!(
+            "Latest release v{} has no signed update for {}; skipping update",
+            latest_release.version, target_bin
+        );
+        return;
+    }
+
     match updater.update_extended() {
         Ok(status) => match status {
             UpdateStatus::UpToDate => {
@@ -53,7 +93,7 @@ pub fn check_update_proxy() {
                     "Proxy updated to version {}. Restarting Proxy",
                     release.version
                 );
-                for asset in release.assets {
+                for asset in &release.assets {
                     if asset.name == target_bin {
                         let bin_name = std::path::PathBuf::from(target_bin);
                         let new_exe = tmp_dir.path().join(&bin_name);
@@ -71,6 +111,12 @@ pub fn check_update_proxy() {
                 }
                 let bin_name = std::path::PathBuf::from(target_bin);
                 let new_exe = tmp_dir.path().join(&bin_name);
+                if let Err(e) =
+                    verify_signature(&release.assets, target_bin, &new_exe, tmp_dir.path())
+                {
+                    error!("Signature verification failed: {}, Skipping update", e);
+                    return;
+                }
                 if let Err(e) = std::fs::rename(&new_exe, &original_path) {
                     error!(
                         "Failed to move new binary to {}: {}",
@@ -122,5 +168,37 @@ pub fn check_update_proxy() {
         Err(e) => {
             error!("Failed to update proxy: {}", e);
         }
+    }
+}
+
+fn verify_signature(
+    assets: &[ReleaseAsset],
+    target_bin: &str,
+    binary: &std::path::Path,
+    temp_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let signature_name = format!("{target_bin}.minisig");
+    let signature_asset = assets
+        .iter()
+        .find(|asset| asset.name == signature_name)
+        .ok_or_else(|| format!("Release is missing {signature_name}"))?;
+    let signature_path = temp_dir.join(signature_name);
+    let mut signature_file = std::fs::File::create(&signature_path)?;
+    self_update::Download::from_url(&signature_asset.download_url)
+        .download_to(&mut signature_file)?;
+
+    let public_key = PublicKey::decode(RELEASE_PUBLIC_KEY)?;
+    let signature = Signature::from_file(&signature_path)?;
+    public_key.verify(&std::fs::read(binary)?, &signature, false)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_public_key_is_valid() {
+        assert!(PublicKey::decode(RELEASE_PUBLIC_KEY).is_ok());
     }
 }
