@@ -36,10 +36,8 @@ pub fn validate_miner_tag(tag_prefix: &str, miner_name: Option<&str>) -> Result<
     } else if tag_len + 1 + MAX_BIP34_HEIGHT_PREFIX_LEN
         > MAX_COINBASE_SCRIPT_LEN - MAX_EXTRANONCE_LEN
     {
-        let max_tag_len = MAX_COINBASE_SCRIPT_LEN
-            - MAX_EXTRANONCE_LEN
-            - MAX_BIP34_HEIGHT_PREFIX_LEN
-            - 1;
+        let max_tag_len =
+            MAX_COINBASE_SCRIPT_LEN - MAX_EXTRANONCE_LEN - MAX_BIP34_HEIGHT_PREFIX_LEN - 1;
         Err(format!(
             "coinbase script tag must leave room for its push-length byte and the BIP34 height prefix, got {tag_len} tag bytes (maximum {max_tag_len})"
         ))
