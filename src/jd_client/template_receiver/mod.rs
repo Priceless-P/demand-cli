@@ -239,6 +239,7 @@ impl TemplateRx {
             .safe_lock(|s| s.miner_coinbase_output.clone())
             .map_err(|_| Error::TemplateRxMutexCorrupted)?;
         let miner_name = crate::config::Configuration::miner_name();
+        let tag_prefix = crate::config::Configuration::tag_prefix();
         let merge_mining_enabled = self_mutex
             .safe_lock(|template_rx| template_rx.merge_mining_enabled)
             .map_err(|_| Error::TemplateRxMutexCorrupted)?;
@@ -359,6 +360,7 @@ impl TemplateRx {
                                     }
                                     if let Err(e) = crate::shared::miner_tag::tag_new_template(
                                         &mut m,
+                                        &tag_prefix,
                                         miner_name.as_deref(),
                                     ) {
                                         error!("Invalid miner tag coinbase script data: {e}");

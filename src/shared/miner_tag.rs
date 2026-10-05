@@ -8,9 +8,9 @@ pub const MAX_MINER_NAME_LEN: usize = 10;
 const MAX_COINBASE_SCRIPT_LEN: usize = 100;
 const MAX_EXTRANONCE_LEN: usize = 32;
 const MAX_DIRECT_PUSH_LEN: usize = 75;
-
-const TAG_PREFIX: &str = "/DMND/";
-const TAG_SUFFIX: &str = "/";
+// BIP34 height: one push-length byte plus up to five height bytes.
+const MAX_BIP34_HEIGHT_PREFIX_LEN: usize = 6;
+pub const DEFAULT_TAG_PREFIX: &str = "/DMND/";
 
 pub fn validate_miner_name(name: &str) -> Result<(), String> {
     if name.len() > MAX_MINER_NAME_LEN {
@@ -23,8 +23,27 @@ pub fn validate_miner_name(name: &str) -> Result<(), String> {
     }
 }
 
-pub fn format_miner_tag(miner_name: Option<&str>) -> String {
-    format!("{TAG_PREFIX}{}{TAG_SUFFIX}", miner_name.unwrap_or_default())
+pub fn format_miner_tag(tag_prefix: &str, miner_name: Option<&str>) -> String {
+    format!("{}{}/", tag_prefix, miner_name.unwrap_or_default())
+}
+
+pub fn validate_miner_tag(tag_prefix: &str, miner_name: Option<&str>) -> Result<(), String> {
+    let tag_len = format_miner_tag(tag_prefix, miner_name).len();
+    if tag_len > MAX_DIRECT_PUSH_LEN {
+        Err(format!(
+            "coinbase script tag must fit in a direct push, got {tag_len} bytes (maximum {MAX_DIRECT_PUSH_LEN})"
+        ))
+    } else if tag_len + 1 + MAX_BIP34_HEIGHT_PREFIX_LEN
+        > MAX_COINBASE_SCRIPT_LEN - MAX_EXTRANONCE_LEN
+    {
+        let max_tag_len =
+            MAX_COINBASE_SCRIPT_LEN - MAX_EXTRANONCE_LEN - MAX_BIP34_HEIGHT_PREFIX_LEN - 1;
+        Err(format!(
+            "coinbase script tag must leave room for its push-length byte and the BIP34 height prefix, got {tag_len} tag bytes (maximum {max_tag_len})"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 pub fn append_tag_to_script_prefix<'a>(
@@ -62,9 +81,10 @@ pub fn append_tag_to_script_prefix<'a>(
 
 pub fn tag_new_template<'a>(
     template: &mut NewTemplate<'a>,
+    tag_prefix: &str,
     miner_name: Option<&str>,
 ) -> Result<(), String> {
-    let tag = format_miner_tag(miner_name).into_bytes();
+    let tag = format_miner_tag(tag_prefix, miner_name).into_bytes();
     template.coinbase_prefix = append_tag_to_script_prefix(template.coinbase_prefix.clone(), &tag)?;
     Ok(())
 }
@@ -76,7 +96,7 @@ mod tests {
 
     #[test]
     fn formats_empty_miner_name_tag() {
-        assert_eq!(format_miner_tag(None), "/DMND//");
+        assert_eq!(format_miner_tag(DEFAULT_TAG_PREFIX, None), "/DMND//");
     }
 
     #[test]
@@ -90,8 +110,8 @@ mod tests {
         let prefix: B0255<'static> = vec![0x03, 0x5a, 0x59, 0x0e, 0x00]
             .try_into()
             .expect("sample script prefix should fit in B0255");
-        let tag = b"/DMND//";
-        let tagged = append_tag_to_script_prefix(prefix, tag)
+        let tag = format_miner_tag(DEFAULT_TAG_PREFIX, None);
+        let tagged = append_tag_to_script_prefix(prefix, tag.as_bytes())
             .expect("tagged script prefix should fit")
             .to_vec();
 
@@ -146,7 +166,8 @@ mod tests {
             merkle_path,
         };
 
-        tag_new_template(&mut template, Some("miner4")).expect("tagged template should fit");
+        tag_new_template(&mut template, DEFAULT_TAG_PREFIX, Some("miner4"))
+            .expect("tagged template should fit");
         assert_eq!(
             template.coinbase_prefix.to_vec(),
             b"\x03\x5a\x59\x0e\x00\x0d/DMND/miner4/".to_vec()

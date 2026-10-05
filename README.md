@@ -143,6 +143,13 @@ POOL_ADDRESSES=pool-a.example.com:20000,pool-b.example.com:20000 \
 ./dmnd-client -l info -d 250T --tp-address="127.0.0.1:8336"
 ```
 
+### Miner coinbase tag
+
+The coinbase tag defaults to `/DMND/<miner_name>/`. Set `--miner-name` (or `miner_name` in
+`config.toml`, or `MINER_NAME`) to provide the name. The prefix defaults to `/DMND/` and can be
+overridden with `--tag-prefix`, `tag_prefix` in `config.toml`, or `TAG_PREFIX`. For example,
+`--tag-prefix "/POOL/" --miner-name alice` produces `/POOL/alice/`.
+
 ### 4.3 RSK merge mining
 
 See [MERGE_MINING.md](MERGE_MINING.md) for the proxy design, safety model, complete bridge HTTP

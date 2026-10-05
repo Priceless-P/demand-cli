@@ -13,7 +13,9 @@ use tracing::{debug, error, info, warn};
 use crate::{
     shared::{
         error::Error,
-        miner_tag::{format_miner_tag, validate_miner_name},
+        miner_tag::{
+            format_miner_tag, validate_miner_name, validate_miner_tag, DEFAULT_TAG_PREFIX,
+        },
     },
     DEFAULT_SV1_HASHPOWER, PRODUCTION_URL, STAGING_URL, TESTNET3_URL,
 };
@@ -80,6 +82,8 @@ struct Args {
     #[clap(long)]
     miner_name: Option<String>,
     #[clap(long)]
+    tag_prefix: Option<String>,
+    #[clap(long)]
     rpc_url: Option<String>,
     #[clap(long)]
     rpc_user: Option<String>,
@@ -117,6 +121,7 @@ struct ConfigFile {
     headful: Option<bool>,
     auto_update: Option<bool>,
     miner_name: Option<String>,
+    tag_prefix: Option<String>,
     rpc_url: Option<String>,
     rpc_user: Option<String>,
     rpc_pwd: Option<String>,
@@ -152,6 +157,7 @@ impl ConfigFile {
             headful: None,
             auto_update: None,
             miner_name: None,
+            tag_prefix: None,
             rpc_url: None,
             rpc_user: None,
             rpc_pwd: None,
@@ -190,6 +196,7 @@ pub struct Configuration {
     headful: bool,
     auto_update: bool,
     miner_name: Option<String>,
+    tag_prefix: String,
     api_tx_token: Option<String>,
     prioritizing_txs_config: Option<BitcoindRpcConfig>,
     missing_prioritizing_txs_variables: Vec<&'static str>,
@@ -251,6 +258,7 @@ and make that test pass."
         headful: bool,
         auto_update: bool,
         miner_name: Option<String>,
+        tag_prefix: String,
         rpc_url: String,
         rpc_user: String,
         rpc_pwd: String,
@@ -259,6 +267,8 @@ and make that test pass."
         if let Err(error) = Self::validate_supported_delay(delay) {
             panic!("{error}");
         }
+        validate_miner_tag(&tag_prefix, miner_name.as_deref())
+            .unwrap_or_else(|error| panic!("{error}"));
 
         let configured_api_tx_token = if api_tx_token.trim().is_empty() {
             None
@@ -296,6 +306,7 @@ and make that test pass."
             headful,
             auto_update,
             miner_name,
+            tag_prefix,
             api_tx_token: configured_api_tx_token,
             prioritizing_txs_config,
             missing_prioritizing_txs_variables,
@@ -365,6 +376,7 @@ and make that test pass."
             false,
             false,
             None,
+            DEFAULT_TAG_PREFIX.to_string(),
             "http://127.0.0.1:8332".to_string(),
             "user".to_string(),
             "password".to_string(),
@@ -563,6 +575,10 @@ and make that test pass."
         Self::cfg().miner_name.clone()
     }
 
+    pub fn tag_prefix() -> String {
+        Self::cfg().tag_prefix.clone()
+    }
+
     pub(crate) fn api_tx_token() -> Option<String> {
         Self::cfg().api_tx_token.clone()
     }
@@ -647,6 +663,12 @@ and make that test pass."
             .or(config.miner_name)
             .or_else(|| std::env::var("MINER_NAME").ok());
 
+        let tag_prefix = args
+            .tag_prefix
+            .or(config.tag_prefix)
+            .or_else(|| std::env::var("TAG_PREFIX").ok())
+            .unwrap_or_else(|| DEFAULT_TAG_PREFIX.to_string());
+
         let rpc_url = args
             .rpc_url
             .or(config.rpc_url)
@@ -672,7 +694,7 @@ and make that test pass."
         }
         println!(
             "Using miner tag: {}",
-            format_miner_tag(miner_name.as_deref())
+            format_miner_tag(&tag_prefix, miner_name.as_deref())
         );
 
         let interval = args
@@ -873,6 +895,7 @@ and make that test pass."
             headful,
             auto_update,
             miner_name,
+            tag_prefix,
             rpc_url,
             rpc_user,
             rpc_pwd,
