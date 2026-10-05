@@ -130,6 +130,7 @@ async fn library_init_sv2_setup_connection() {
         false,
         false,
         None,
+        "/DMND/".to_string(),
         "http://127.0.0.1:8332".to_string(),
         "user".to_string(),
         "password".to_string(),
