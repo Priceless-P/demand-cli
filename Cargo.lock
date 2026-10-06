@@ -1146,6 +1146,7 @@ dependencies = [
  "stratum-apps",
  "sv1_api 1.0.1",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tokio-util",
  "toml",

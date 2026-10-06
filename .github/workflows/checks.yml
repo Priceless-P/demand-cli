@@ -33,7 +33,8 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run cargo test
-        run: cargo test --all-features
+        # External TP/minerd scenarios run in the explicitly selected mining-e2e workflow.
+        run: cargo test --locked
         env:
           TOKEN: ${{ vars.TOKEN || 'ULtFov52kaLzawysczdN' }}  # Secrets don't work for PRs from a fork
           STAGING: ${{ vars.STAGING }}

@@ -421,10 +421,30 @@ impl DownstreamMiningNode {
             .map_err(|_| JdClientError::Unrecoverable)
     }
 
-    pub(crate) fn apply_difficulty_commitment(
+    pub(crate) async fn apply_difficulty_commitment(
         self_mutex: &Arc<Mutex<Self>>,
         template: &mut NewTemplate<'static>,
     ) -> Result<(), JdClientError> {
+        // TP can arrive before mining setup. Wait before preparing the canonical template,
+        // otherwise the first declaration and mining job can omit the required DIFF32 output.
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let ready = self_mutex
+                    .safe_lock(|state| {
+                        state
+                            .status
+                            .get_channel()
+                            .is_ok_and(|channel| !channel.get_extended_channels_ids().is_empty())
+                    })
+                    .map_err(|_| JdClientError::JdClientDownstreamMutexCorrupted)?;
+                if ready {
+                    return Ok::<(), JdClientError>(());
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .map_err(|_| JdClientError::Unrecoverable)??;
         let upstream = self_mutex
             .safe_lock(|state| match &state.status {
                 DownstreamMiningNodeStatus::ChannelOpened((_, upstream)) => Some(upstream.clone()),
@@ -443,15 +463,6 @@ impl DownstreamMiningNode {
         pool_output: &[u8],
         template_generation: Option<u64>,
     ) -> Result<Option<DownstreamJob>, JdClientError> {
-        // Make sure to set the template handled to true since we do not have a channel opened yet
-        // and template can not be handled without it we will lock template handling forever.
-        if !self_mutex
-            .safe_lock(|s| s.status.have_channel())
-            .map_err(|e| Error::PoisonLock(e.to_string()))?
-        {
-            super::IS_NEW_TEMPLATE_HANDLED.store(true, std::sync::atomic::Ordering::Release);
-            return Ok(None);
-        }
         let pool_outputs = Self::decode_pool_coinbase_outputs(pool_output)?;
         Self::validate_final_coinbase_output_count(&new_template, pool_outputs.len())?;
 
@@ -781,6 +792,109 @@ impl IsMiningDownstream for DownstreamMiningNode {}
 mod tests {
     use super::*;
     use bitcoin::{consensus::serialize, script::PushBytesBuf, Amount, ScriptBuf};
+
+    #[tokio::test]
+    async fn first_template_waits_before_adding_difficulty_commitment() {
+        use roles_logic_sv2::handlers::mining::ParseUpstreamMiningMessages;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        let (solution_sender, _solutions) = tokio::sync::mpsc::channel(8);
+        let (upstream_sender, _upstream_receiver) = tokio::sync::mpsc::channel(8);
+        let upstream = UpstreamMiningNode::new(8, upstream_sender).await.unwrap();
+        let target =
+            bitcoin::Target::from_compact(bitcoin::CompactTarget::from_consensus(0x1d00ffff));
+        let downstream = Arc::new(Mutex::new(DownstreamMiningNode {
+            sender,
+            status: DownstreamMiningNodeStatus::Paired(upstream.clone()),
+            prev_job_id: None,
+            solution_sender,
+            withhold: false,
+            miner_coinbase_output: vec![],
+            jd: None,
+        }));
+        let mut template = template_with_outputs(0, 0);
+        template.future_template = true;
+        template.version = 0x20000000;
+        template.coinbase_tx_version = 2;
+        template.coinbase_prefix = vec![2, 1, 1, 0].try_into().unwrap();
+        template.coinbase_tx_value_remaining = 5_000_000_000;
+        let output = TxOut {
+            value: Amount::ZERO,
+            script_pubkey: ScriptBuf::from_bytes(vec![0x51]),
+        };
+        let encoded = serialize(&output);
+        let task_downstream = downstream.clone();
+        let task = tokio::spawn(async move {
+            DownstreamMiningNode::apply_difficulty_commitment(&task_downstream, &mut template)
+                .await?;
+            DownstreamMiningNode::on_new_template(&task_downstream, template, &encoded, None).await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !task.is_finished(),
+            "first template was discarded before channel setup"
+        );
+        upstream
+            .safe_lock(|state| {
+                state.downstream = Some(downstream.clone());
+                state.handle_open_extended_mining_channel_success(
+                    OpenExtendedMiningChannelSuccess {
+                        request_id: 1,
+                        channel_id: 1,
+                        target: target.to_le_bytes().into(),
+                        extranonce_size: 28,
+                        extranonce_prefix: vec![0; 4].try_into().unwrap(),
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        let mut factory = PoolChannelFactory::new(
+            Arc::new(Mutex::new(roles_logic_sv2::utils::GroupId::new())),
+            ExtendedExtranonce::new(0..0, 0..4, 4..32),
+            JobsCreators::new(32),
+            60.0,
+            roles_logic_sv2::channel_logic::channel_factory::ExtendedChannelKind::Pool,
+            vec![output],
+            vec![],
+        )
+        .unwrap();
+        factory.new_extended_channel(1, 100_000.0, 8).unwrap();
+        downstream
+            .safe_lock(|state| {
+                state.status = DownstreamMiningNodeStatus::ChannelOpened((factory, upstream))
+            })
+            .unwrap();
+        let job = timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            job.is_some(),
+            "first template did not produce a declaration job"
+        );
+        let job = job.unwrap();
+        let coinbase: bitcoin::Transaction = bitcoin::consensus::deserialize(
+            &[
+                job.coinbase_tx_prefix.as_ref(),
+                &[0; 32],
+                job.coinbase_tx_suffix.as_ref(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let mut commitment = b"\x6a\x0aDIFF32".to_vec();
+        commitment.extend_from_slice(&(target.difficulty_float() as f32).to_le_bytes());
+        assert!(coinbase
+            .output
+            .iter()
+            .any(|output| output.value == Amount::ZERO
+                && output.script_pubkey.as_bytes() == commitment));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(Mining::NewExtendedMiningJob(_))
+        ));
+    }
 
     fn template_with_outputs(actual_count: usize, declared_count: u32) -> NewTemplate<'static> {
         let output = TxOut {
