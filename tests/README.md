@@ -1,41 +1,54 @@
 # Mining integration tests
 
-Run the CLI configuration checks and self-contained pool protocol/validator tests with the
-repository's pinned compiler:
+The repository includes the actual TP simulator and cpuminer executables in
+[`bin/linux-amd64`](bin/linux-amd64), with checksums, licenses, and cpuminer's source
+archive. Docker supplies their runtime libraries and builds the proxy and test runner
+with Rust 1.88.0. You need Docker; no local Rust installation, private TP repository,
+external binary paths, or Bitcoin node are required.
+
+Build and run from the repository root:
+
+```bash
+docker build --platform linux/amd64 -f tests/Dockerfile -t dmnd-mining-tests .
+mkdir -p target/mining-e2e
+docker run --rm --init --network none --platform linux/amd64 \
+  --user "$(id -u):$(id -g)" \
+  --mount "type=bind,src=$(pwd)/target/mining-e2e,dst=/artifacts" \
+  dmnd-mining-tests
+```
+
+The image contains both supplied binaries, the compiled proxy, and the compiled mining
+test executable. Building needs network access for public Cargo dependencies and Debian
+packages; running needs no downloads or external network. The default entry point runs
+all 17 mining scenarios plus the pool regression, prints their results, and exits with
+the suite's status. Append `--exact jd_mining` after the image name to run one scenario.
+The supplied binaries target Linux x86-64; `--platform linux/amd64` also selects Docker's
+emulation on ARM hosts.
+
+The template provider for these tests is DEMAND's `tp-simulator`, which generates SV2
+templates and simulated Bitcoin JSON-RPC. Its bundled binary supports
+`--rpc-listen-addr`, `--sv2-listen-addr`, `--seed`, `--time-multiplier`,
+`--max-stored-templates`, and `--network-hashpower`. It authenticates
+`getblockcount`/`submitblock` with its default `username`/`password` credentials.
+Both single and batch RPC responses are understood. See [binary provenance and update
+instructions](bin/README.md) before replacing either executable.
+
+On Linux x86-64 with Rust and the runtime/build libraries installed, you can also use
+the checked-in binaries directly:
 
 ```sh
+cargo +1.88.0 test --locked --features mining-e2e --test mining_e2e -- --nocapture --test-threads=1
 cargo +1.88.0 test --locked --test cli_args --test pool_simulator
 ```
 
-The external suite is selected explicitly. It requires a versioned DEMAND `tp-simulator`
-binary and pooler's `minerd` (SHA256d support). Missing or invalid binary paths fail the
-selected tests; no scenarios are silently skipped.
+`TP_SIMULATOR_BIN` and `CPUMINER_BIN` optionally override the bundled executables.
+Invalid overrides fail clearly; no scenarios are silently skipped.
+`TP_SIMULATOR_VERSION` is an optional artifact identifier; the harness always records
+each binary's SHA256 and exact invocation.
 
-```sh
-TP_SIMULATOR_BIN=/absolute/path/to/tp-simulator \
-CPUMINER_BIN=/absolute/path/to/minerd \
-TP_SIMULATOR_VERSION=your-artifact-version \
-cargo +1.88.0 test --locked --features mining-e2e --test mining_e2e -- --nocapture
-```
-
-`TP_SIMULATOR_VERSION` is an optional artifact release/run identifier; the harness always
-records the binary's SHA256 and exact invocation. The TP artifact must support
-`--rpc-listen-addr`, `--sv2-listen-addr`, `--seed`, `--time-multiplier`, and
-`--max-stored-templates`, `--network-hashpower`, the locked SV2 template protocol, and authenticated `getblockcount`/`submitblock`
-RPC with its default `username`/`password` credentials. Both single and batch RPC responses
-are understood. The suite consumes the TP binary without depending on the private Cargo
-workspace. Build changes to TP in its own repository using its pinned 1.95.0 compiler and
-toolchain-parity check.
-
-The `Mining end-to-end tests` workflow provides the CI artifact contract: configure
-`TP_ARTIFACT_REPOSITORY` to the private repository publishing an Actions artifact named
-`tp-simulator-linux-x86_64` containing `tp-simulator` at its root. Configure the
-`TP_ARTIFACT_READ_TOKEN` secret with Actions read access to that repository. Dispatch with
-the successful producer run ID and the binary's expected SHA256. The producer must build
-TP using its pinned compiler and run its own parity/tests checks before uploading. The
-consumer checks the checksum, builds cpuminer at a fixed revision, runs the explicitly
-selected suite on Rust 1.88.0, and uploads logs even when tests fail. Ordinary CI tests run
-without `mining-e2e`; Clippy still compiles all features and targets.
+The `Mining end-to-end tests` workflow builds and runs the same Docker image and uploads
+logs even when tests fail. It needs no private artifact credentials. Ordinary CI tests
+run without `mining-e2e`; Clippy still compiles all features and targets.
 
 Each scenario launches a fresh proxy with controlled environment variables, auto-update,
 browser opening, and monitoring disabled, isolated working directories, and dynamic
@@ -52,6 +65,8 @@ directories/binary checksums, and separate TP, proxy, and miner logs. Per-pool j
 are written as events occur, so interrupted scenarios retain their evidence. Sequence
 numbers are scoped to each pool. A successful mining test requires independently
 validated pool submissions; miner acknowledgement logs are an additional check.
+The Docker command mounts this host directory at `/artifacts`, which is the path printed
+inside the container.
 
 To see service logs from startup, run this in a second Bash terminal from the repository
 root while the suite is running:

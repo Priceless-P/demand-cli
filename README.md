@@ -1,5 +1,8 @@
 # DMND Stratum V2 Client — Getting Started Guide
 
+For local mining integration tests, use the [Docker runner](tests/README.md), which
+includes the TP simulator and cpuminer binaries.
+
 ## 1. Introduction
 
 This guide walks you through setting up the DMND Stratum V2 Client and connecting it to the DMND pool. When you're done, you will have a fully functional Stratum V2 mining setup with **Job Declaration** — meaning *you* build your own block templates from your own Bitcoin node, instead of the pool deciding which transactions you mine.

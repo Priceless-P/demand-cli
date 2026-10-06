@@ -2,13 +2,6 @@ name: Mining end-to-end tests
 
 on:
   workflow_dispatch:
-    inputs:
-      tp_run_id:
-        description: Successful private TP artifact workflow run ID
-        required: true
-      tp_sha256:
-        description: SHA256 of the tp-simulator binary in that artifact
-        required: true
 
 permissions:
   contents: read
@@ -19,40 +12,15 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: '1.88.0'
-      - name: Install build dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y capnproto libcapnp-dev automake autoconf libcurl4-openssl-dev libjansson-dev
-      - name: Download versioned private TP artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tp-simulator-linux-x86_64
-          path: external/tp
-          repository: ${{ vars.TP_ARTIFACT_REPOSITORY }}
-          run-id: ${{ inputs.tp_run_id }}
-          github-token: ${{ secrets.TP_ARTIFACT_READ_TOKEN }}
-      - name: Verify TP identity
-        env:
-          TP_EXPECTED_SHA256: ${{ inputs.tp_sha256 }}
-        run: |
-          printf '%s  external/tp/tp-simulator\n' "$TP_EXPECTED_SHA256" | sha256sum --check --strict
-          chmod +x external/tp/tp-simulator
-      - name: Build pinned CPU miner
-        run: |
-          git clone https://github.com/pooler/cpuminer.git external/cpuminer
-          git -C external/cpuminer checkout 5f02105940edb61144c09a7eb960bba04a10d5b7
-          cd external/cpuminer
-          ./autogen.sh
-          ./configure CFLAGS='-O2'
-          make -j2
+      - name: Build standalone test image
+        run: docker build --platform linux/amd64 -f tests/Dockerfile -t dmnd-mining-tests .
       - name: Run scenarios
-        env:
-          TP_SIMULATOR_VERSION: artifact-run-${{ inputs.tp_run_id }}
         run: |
-          TP_SIMULATOR_BIN="$GITHUB_WORKSPACE/external/tp/tp-simulator" \
-          CPUMINER_BIN="$GITHUB_WORKSPACE/external/cpuminer/minerd" \
-          cargo +1.88.0 test --locked --features mining-e2e --test mining_e2e -- --nocapture
+          mkdir -p target/mining-e2e
+          docker run --rm --init --network none --platform linux/amd64 \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$(pwd)/target/mining-e2e,dst=/artifacts" \
+            dmnd-mining-tests
       - name: Retain run artifacts
         if: always()
         uses: actions/upload-artifact@v4

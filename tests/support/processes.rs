@@ -24,12 +24,14 @@ pub fn free_address() -> TestResult<SocketAddr> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?)
 }
 
-pub fn external_binary(variable: &str) -> TestResult<PathBuf> {
-    let path = std::env::var_os(variable).ok_or_else(|| {
-        error(format!(
-            "mining-e2e requires {variable}=/absolute/path/to/binary; see tests/README.md"
-        ))
-    })?;
+pub fn external_binary(variable: &str, bundled_name: &str) -> TestResult<PathBuf> {
+    let path = std::env::var_os(variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/bin/linux-amd64")
+                .join(bundled_name)
+        });
     let path = fs::canonicalize(&path).map_err(|e| error(format!("{variable}: {e}")))?;
     if !path.is_file() {
         return Err(error(format!(
@@ -506,8 +508,8 @@ pub struct TestRig {
 impl TestRig {
     pub fn new(name: &str) -> TestResult<Self> {
         // Check both before creating any child or listener. Selecting this suite never silently skips it.
-        external_binary("TP_SIMULATOR_BIN")?;
-        let miner_binary = external_binary("CPUMINER_BIN")?;
+        external_binary("TP_SIMULATOR_BIN", "tp-simulator")?;
+        let miner_binary = external_binary("CPUMINER_BIN", "minerd")?;
         Ok(Self {
             artifacts: Artifacts::new(name)?,
             tp: None,
@@ -534,7 +536,7 @@ impl TestRig {
             "miner_count":miner_count,"token":token,"pool_configs":format!("{pool_configs:?}"),"tp_artifact_version":std::env::var("TP_SIMULATOR_VERSION").ok()}))?;
         self.tp = Some(
             TpProcess::start(
-                &external_binary("TP_SIMULATOR_BIN")?,
+                &external_binary("TP_SIMULATOR_BIN", "tp-simulator")?,
                 &self.artifacts,
                 seed,
                 time_multiplier,
