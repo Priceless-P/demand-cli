@@ -53,6 +53,19 @@ are written as events occur, so interrupted scenarios retain their evidence. Seq
 numbers are scoped to each pool. A successful mining test requires independently
 validated pool submissions; miner acknowledgement logs are an additional check.
 
+To see service logs from startup, run this in a second Bash terminal from the repository
+root while the suite is running:
+
+```sh
+RUN=$(ls -td -- target/mining-e2e/*/ | head -n 1)
+tail -n +1 -F "$RUN"/{tp.log,proxy.log,miner-0.log,pool-0-events.jsonl}
+```
+
+This follows one scenario. Rerun it to select the next scenario's directory; services
+stop after each scenario finishes. Disconnect/rejection scenarios deliberately generate
+errors, so check the test result and `summary.json` for the outcome. Invalid-token tests
+do not start a miner.
+
 The actor supports mining and JD connections on one listener, including router probe
 connections, target changes, peer disconnects, response pause/resume, forced share and
 declaration rejection, snapshots, and deterministic synthetic templates/tips for protocol

@@ -1,7 +1,10 @@
 use super::{
     artifacts::{binary_identity, Artifacts},
     error,
-    pool::{control::PoolCommand, PoolConfig, RunningPool},
+    pool::{
+        control::{EventMatcher, PoolCommand},
+        PoolConfig, RunningPool,
+    },
     TestResult,
 };
 use std::{
@@ -548,6 +551,17 @@ impl TestRig {
                     .join(format!("pool-{}-events.jsonl", self.pools.len())),
             );
             self.pools.push(RunningPool::start(config).await?);
+            // Wait for real TP work before starting another connection. The supplied TP's
+            // locked Noise helper races when multiple handshakes run at once.
+            self.pools
+                .last()
+                .expect("pool")
+                .handle()
+                .wait_for(
+                    EventMatcher::TipChanged,
+                    Instant::now() + Duration::from_secs(15),
+                )
+                .await?;
         }
         let addresses = self.pools.iter().map(|p| p.address).collect::<Vec<_>>();
         self.proxy = Some(ProxyProcess::start(
