@@ -414,8 +414,16 @@ impl TemplateRx {
                                         pending_downstream_job = None;
                                         pending_template_generation = None;
                                         if let Err(error) =
+                                            Downstream::wait_for_mining_channel(&down).await
+                                        {
+                                            error!(%error, "Failed to wait for mining channel setup");
+                                            ProxyState::update_downstream_state(
+                                                DownstreamType::JdClientMiningDownstream,
+                                            );
+                                            break;
+                                        }
+                                        if let Err(error) =
                                             Downstream::apply_difficulty_commitment(&down, &mut m)
-                                                .await
                                         {
                                             error!(%error, "Failed to add difficulty commitment");
                                             ProxyState::update_downstream_state(

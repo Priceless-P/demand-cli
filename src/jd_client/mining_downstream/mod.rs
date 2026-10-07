@@ -421,9 +421,8 @@ impl DownstreamMiningNode {
             .map_err(|_| JdClientError::Unrecoverable)
     }
 
-    pub(crate) async fn apply_difficulty_commitment(
+    pub(crate) async fn wait_for_mining_channel(
         self_mutex: &Arc<Mutex<Self>>,
-        template: &mut NewTemplate<'static>,
     ) -> Result<(), JdClientError> {
         // TP can arrive before mining setup. Wait before preparing the canonical template,
         // otherwise the first declaration and mining job can omit the required DIFF32 output.
@@ -444,7 +443,13 @@ impl DownstreamMiningNode {
             }
         })
         .await
-        .map_err(|_| JdClientError::Unrecoverable)??;
+        .map_err(|_| JdClientError::Unrecoverable)?
+    }
+
+    pub(crate) fn apply_difficulty_commitment(
+        self_mutex: &Arc<Mutex<Self>>,
+        template: &mut NewTemplate<'static>,
+    ) -> Result<(), JdClientError> {
         let upstream = self_mutex
             .safe_lock(|state| match &state.status {
                 DownstreamMiningNodeStatus::ChannelOpened((_, upstream)) => Some(upstream.clone()),
@@ -793,6 +798,28 @@ mod tests {
     use super::*;
     use bitcoin::{consensus::serialize, script::PushBytesBuf, Amount, ScriptBuf};
 
+    #[test]
+    fn solo_mining_commitment_does_not_wait_for_channel() {
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let (solution_sender, _solutions) = tokio::sync::mpsc::channel(1);
+        let downstream = Arc::new(Mutex::new(DownstreamMiningNode::new(
+            sender,
+            None,
+            solution_sender,
+            false,
+            vec![],
+            None,
+        )));
+        let mut template = template_with_outputs(1, 1);
+        let outputs = template.coinbase_tx_outputs.to_vec();
+
+        DownstreamMiningNode::apply_difficulty_commitment(&downstream, &mut template)
+            .expect("solo mining does not require a difficulty commitment");
+
+        assert_eq!(template.coinbase_tx_outputs.as_ref(), outputs.as_slice());
+        assert_eq!(template.coinbase_tx_outputs_count, 1);
+    }
+
     #[tokio::test]
     async fn first_template_waits_before_adding_difficulty_commitment() {
         use roles_logic_sv2::handlers::mining::ParseUpstreamMiningMessages;
@@ -824,8 +851,8 @@ mod tests {
         let encoded = serialize(&output);
         let task_downstream = downstream.clone();
         let task = tokio::spawn(async move {
-            DownstreamMiningNode::apply_difficulty_commitment(&task_downstream, &mut template)
-                .await?;
+            DownstreamMiningNode::wait_for_mining_channel(&task_downstream).await?;
+            DownstreamMiningNode::apply_difficulty_commitment(&task_downstream, &mut template)?;
             DownstreamMiningNode::on_new_template(&task_downstream, template, &encoded, None).await
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
