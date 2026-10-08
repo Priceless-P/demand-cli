@@ -1,0 +1,11 @@
+**
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!release-signing.pub
+!src/
+!src/**
+!frontend/
+!frontend/**
+!tests/
+!tests/**

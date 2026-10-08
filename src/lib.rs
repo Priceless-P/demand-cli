@@ -2,6 +2,8 @@
 use integration_tests_sv2 as _;
 #[cfg(test)]
 use stratum_apps as _;
+#[cfg(test)]
+use tempfile as _;
 
 #[cfg(all(not(target_os = "windows"), feature = "jemalloc"))]
 use jemallocator::Jemalloc;

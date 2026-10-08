@@ -1,0 +1,30 @@
+name: Mining end-to-end tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mining:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build standalone test image
+        run: docker build --platform linux/amd64 -f tests/Dockerfile -t dmnd-mining-tests .
+      - name: Run scenarios
+        run: |
+          mkdir -p target/mining-e2e
+          docker run --rm --init --network none --platform linux/amd64 \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$(pwd)/target/mining-e2e,dst=/artifacts" \
+            dmnd-mining-tests
+      - name: Retain run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mining-e2e-${{ github.run_id }}
+          path: target/mining-e2e
+          if-no-files-found: warn

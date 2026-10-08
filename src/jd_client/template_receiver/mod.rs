@@ -414,6 +414,15 @@ impl TemplateRx {
                                         pending_downstream_job = None;
                                         pending_template_generation = None;
                                         if let Err(error) =
+                                            Downstream::wait_for_mining_channel(&down).await
+                                        {
+                                            error!(%error, "Failed to wait for mining channel setup");
+                                            ProxyState::update_downstream_state(
+                                                DownstreamType::JdClientMiningDownstream,
+                                            );
+                                            break;
+                                        }
+                                        if let Err(error) =
                                             Downstream::apply_difficulty_commitment(&down, &mut m)
                                         {
                                             error!(%error, "Failed to add difficulty commitment");
@@ -896,7 +905,7 @@ mod tests {
     }
 
     fn make_new_template(template_id: u64, future_template: bool) -> NewTemplate<'static> {
-        let coinbase_prefix: B0255<'static> = Vec::new()
+        let coinbase_prefix: B0255<'static> = vec![2, 33, 1, 0]
             .try_into()
             .expect("coinbase prefix should fit in B0255");
         let coinbase_tx_outputs: B064K<'static> = Vec::new()
@@ -907,7 +916,7 @@ mod tests {
             template_id,
             future_template,
             version: 0,
-            coinbase_tx_version: 1,
+            coinbase_tx_version: 2,
             coinbase_prefix,
             coinbase_tx_input_sequence: 0,
             coinbase_tx_value_remaining: 0,
@@ -992,7 +1001,7 @@ mod tests {
         let frame = recv_std_frame(&mut from_client).await;
         with_decoded_message(frame, |message| match message {
             PoolMessages::TemplateDistribution(TemplateDistribution::CoinbaseOutputDataSize(m)) => {
-                assert_eq!(m.coinbase_output_max_additional_size, 22);
+                assert_eq!(m.coinbase_output_max_additional_size, 43);
             }
             other => panic!("unexpected coinbase size message: {other:?}"),
         });
@@ -1054,7 +1063,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn panics_on_stale_tx_data_success_after_new_template() {
+    async fn ignores_stale_tx_data_success_after_new_template() {
         IS_NEW_TEMPLATE_HANDLED.store(true, Ordering::Release);
         IS_CUSTOM_JOB_SET.store(true, Ordering::Release);
         IS_NEW_PHASH_ARRIVED.store(false, Ordering::Release);
@@ -1074,7 +1083,7 @@ mod tests {
         let tp_task = tokio::spawn(run_fake_tp(tp_to_client_tx, client_to_tp_rx, progress_tx));
 
         let (solution_tx, _solution_rx) = mpsc::channel(1);
-        let (down_tx, _down_rx) = mpsc::channel(1);
+        let (down_tx, _down_rx) = mpsc::channel(16);
         let down = Arc::new(Mutex::new(Downstream::new(
             down_tx,
             None,
@@ -1083,11 +1092,29 @@ mod tests {
             Vec::new(),
             None,
         )));
-
+        // Model a mining session: templates need a channel and a valid payout output.
+        let output = TxOut {
+            value: bitcoin::Amount::ZERO,
+            script_pubkey: bitcoin::ScriptBuf::from_bytes(vec![0x51; 13]),
+        };
+        let mut factory = roles_logic_sv2::channel_logic::channel_factory::PoolChannelFactory::new(
+            Arc::new(Mutex::new(roles_logic_sv2::utils::GroupId::new())),
+            roles_logic_sv2::mining_sv2::ExtendedExtranonce::new(0..0, 0..4, 4..32),
+            roles_logic_sv2::job_creator::JobsCreators::new(32),
+            60.0,
+            roles_logic_sv2::channel_logic::channel_factory::ExtendedChannelKind::Pool,
+            vec![output.clone()],
+            vec![],
+        )
+        .expect("test channel factory");
+        factory
+            .new_extended_channel(1, 100_000.0, 8)
+            .expect("test channel");
+        down.safe_lock(|state| state.status = crate::jd_client::mining_downstream::DownstreamMiningNodeStatus::SoloMinerChannelOpend(factory)).expect("test downstream lock");
         let mut encoded_outputs = vec![];
-        Vec::<TxOut>::new()
+        output
             .consensus_encode(&mut encoded_outputs)
-            .expect("encode coinbase outputs");
+            .expect("encode payout output");
         let self_mutex = Arc::new(Mutex::new(TemplateRx {
             sender: client_to_tp_tx,
             jd: None,
